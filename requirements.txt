@@ -1,0 +1,7 @@
+azure-functions
+requests
+pillow
+pytesseract
+twilio
+python-dotenv
+
