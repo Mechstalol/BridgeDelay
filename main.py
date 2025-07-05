@@ -7,7 +7,7 @@ import pytesseract
 from twilio.rest import Client
 import re
 from datetime import datetime
-
+from typing import Optional
 
 
 load_dotenv()  # load your .env
@@ -40,10 +40,13 @@ def fetch_image(url: str) -> Image.Image:
     return Image.open(BytesIO(resp.content))
 
 def extract_text(img: Image.Image) -> str:
-    # B/W + whitelist digits & ":" to eliminate "@"
-    bw = img.convert("L").point(lambda x: 0 if x < 140 else 255, "1")
-    cfg = r"--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789:"
-    return pytesseract.image_to_string(bw, config=cfg).replace("@", "0").strip()
+    # DEBUG: drop any cropping or config—just raw OCR
+    text = pytesseract.image_to_string(img)
+    return text.strip()
+
+
+
+
 
 def send_sms_to_all(body: str) -> list[str]:
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
@@ -58,11 +61,16 @@ def send_sms_to_all(body: str) -> list[str]:
         sids.append(msg.sid)
     return sids
 
-def parse_delay(text):
-    match = re.search(r"(\d+)", text)
+def parse_delay(text: str) -> Optional[int]:
+    # Turn any “@” into “0”
+    text = text.replace("@", "0")
+
+    # Look for one or more digits immediately before “MIN” (case‐insensitive)
+    match = re.search(r"(\d+)\s*MIN", text, re.IGNORECASE)
     if match:
         return int(match.group(1))
     return None
+
 
 def severity_level(delay: int) -> int:
     if delay <= 5:
@@ -75,13 +83,14 @@ def severity_level(delay: int) -> int:
         return 3
 
 def get_user_settings():
-    """
-    Return a list of user‐preference dicts:
-      - phone (str)
-      - threshold (int, min delay to alert)
-      - windows (list of {start,end} in "HH:MM")
-    For now, we’ll fall back to TWILIO_TO_NUMBERS env var, full‐day window, zero threshold.
-    """
+
+    # First, try to load from disk
+    settings = load_user_settings()
+
+    if settings:
+        return settings
+
+    # Fallback to env-stub if no file
     numbers = os.environ.get("TWILIO_TO_NUMBERS", "")
     users = []
     for num in numbers.split(","):
@@ -94,6 +103,7 @@ def get_user_settings():
             "windows": [{"start": "00:00", "end": "23:59"}]
         })
     return users
+
 
 def send_sms_to_user(body: str, to: str) -> str:
     """
@@ -113,6 +123,33 @@ def load_user_settings():
             return json.load(f)
     except FileNotFoundError:
         return []
+    
+def save_user_settings(settings):
+    with open("user_settings.json", "w") as f:
+        json.dump(settings, f, indent=2)
+
+def parse_windows(s):
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    if len(parts) > 2:
+        raise ValueError("Maximum two windows allowed")
+    windows = []
+    for part in parts:
+        try:
+            start, end = part.split("-", 1)
+            # ensure proper HH:MM format
+            if not re.match(r"^\d{2}:\d{2}$", start) or not re.match(r"^\d{2}:\d{2}$", end):
+                raise ValueError
+            # ensure start < end
+            if start >= end:
+                raise ValueError
+        except ValueError:
+            raise ValueError(f"Invalid window: '{part}'")
+
+        windows.append({"start": start, "end": end})
+    return windows
+
+
+
 
 
 
