@@ -35,9 +35,13 @@ def save_last_text(text: str):
         json.dump({"last_text": text}, f)
 
 def fetch_image(url: str) -> Image.Image:
-    resp = requests.get(url)
+    # Add a timestamp query param and no-cache header
+    bust = int(time.time())
+    full_url = f"{url}?_={bust}"
+    resp = requests.get(full_url, headers={"Cache-Control": "no-cache"})
     resp.raise_for_status()
     return Image.open(BytesIO(resp.content))
+
 
 def extract_text(img: Image.Image) -> str:
     # DEBUG: drop any cropping or config—just raw OCR

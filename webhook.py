@@ -91,6 +91,17 @@ def sms_webhook():
             "• LIST or HELP   Show this message\n"
         )
         return Response(str(resp), mimetype="application/xml")
+    
+    elif parts[0] == "RAW":
+        try:
+            img = fetch_image(IMAGE_URL)
+            raw = extract_text(img)
+            # Trim to 150 chars so SMS doesn’t truncate
+            snippet = raw[:150] + ("…" if len(raw) > 150 else "")
+            resp.message(f"🔍 OCR raw: {snippet}")
+        except Exception:
+            resp.message("⚠️ Error fetching OCR text.")
+        return Response(str(resp), mimetype="application/xml")
 
     # 4c) Unknown command
     else:
