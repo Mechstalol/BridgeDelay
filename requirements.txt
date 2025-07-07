@@ -3,6 +3,5 @@ requests
 pillow
 pytesseract
 twilio
-python-dotenv
 Flask
 

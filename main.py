@@ -1,5 +1,4 @@
 import os, time, json
-from dotenv import load_dotenv
 import requests
 from io import BytesIO
 from PIL import Image
@@ -10,7 +9,6 @@ from datetime import datetime
 from typing import Optional
 
 
-load_dotenv()  # load your .env
 
 # ── Config from ENV ─────────────────────────────────────────────────────────
 IMAGE_URL   = os.environ.get("IMAGE_URL")
