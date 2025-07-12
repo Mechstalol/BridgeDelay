@@ -25,3 +25,4 @@ CMD ["bash", "-lc", "\
     python main.py & \
     exec gunicorn --bind=0.0.0.0:80 --workers=4 webhook:app \
   "]
+
