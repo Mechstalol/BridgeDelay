@@ -19,6 +19,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── TEMP DEBUG ──────────────────────────────────────────────
+      - name: ⛏️ verify secret lengths
+        run: |
+          echo "REGISTRY_LOGIN_SERVER len=${#REGISTRY_LOGIN_SERVER}"
+          echo "REGISTRY_USERNAME      len=${#REGISTRY_USERNAME}"
+          echo "REGISTRY_PASSWORD      len=${#REGISTRY_PASSWORD}"
+        env:
+          REGISTRY_LOGIN_SERVER: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+          REGISTRY_USERNAME:     ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD:     ${{ secrets.REGISTRY_PASSWORD }}
+      # ────────────────────────────────────────────────────────────
+
       - name: Log in to container registry
         uses: docker/login-action@v3
         with:
@@ -28,8 +40,10 @@ jobs:
 
       - name: Build and push Docker image
         run: |
-          docker build -t ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }} -f dockerfile .
-          docker push ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }}
+          docker build -t ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }} \
+                       -f dockerfile .
+          docker push  ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }}
+
 
   deploy:
     runs-on: ubuntu-latest
