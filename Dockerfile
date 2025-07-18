@@ -1,26 +1,34 @@
-# 1️⃣ Base image with Python
+# ── 1️⃣ Base image ──────────────────────────────────────────────
 FROM python:3.11-slim
 
-# 2️⃣ Install system deps (Tesseract OCR + its libs)
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-       tesseract-ocr libtesseract-dev libleptonica-dev pkg-config \
-  && rm -rf /var/lib/apt/lists/*
+# ── 2️⃣ System packages: Tesseract + SSH ────────────────────────
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        tesseract-ocr libtesseract-dev libleptonica-dev pkg-config \
+        openssh-server && \
+    rm -rf /var/lib/apt/lists/*
 
-# 3️⃣ Create app directory
+# ── 3️⃣ Configure SSH (port 2222, root pwd = docker) ───────────
+RUN mkdir /run/sshd && \
+    echo 'root:docker' | chpasswd && \
+    sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+
+# ── 4️⃣ App directory ──────────────────────────────────────────
 WORKDIR /app
 
-# 4️⃣ Copy and install Python requirements
+# ── 5️⃣ Python deps ────────────────────────────────────────────
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 5️⃣ Copy the rest of your code
+# ── 6️⃣ Copy source code ───────────────────────────────────────
 COPY . .
 
-# 6️⃣ Expose port 80 for App Service
+# ── 7️⃣ Expose ports (80 = web, 2222 = SSH) ────────────────────
 EXPOSE 80
+EXPOSE 2222
 
-# 7️⃣ Launch both your monitor and webhook
-CMD ["bash","-c", \
-     "python main.py & \
-      exec gunicorn --bind 0.0.0.0:${PORT:-80} webhook:app"]
+# ── 8️⃣ Single CMD: monitor + sshd + gunicorn ──────────────────
+CMD ["bash","-c", "\
+      python -u main.py & \
+      /usr/sbin/sshd -D & \
+      exec gunicorn --bind 0.0.0.0:${PORT:-80} webhook:app" ]
