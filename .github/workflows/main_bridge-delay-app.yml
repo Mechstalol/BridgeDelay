@@ -1,71 +1,71 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More GitHub Actions for Azure: https://github.com/Azure/actions
-# More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
-
 name: Build and deploy container to Azure Web App - bridge-delay-app
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [ main ]
+  workflow_dispatch:        # manual trigger in Actions tab
 
 jobs:
+# ────────────────────────────────────────────────────────────
+# 1️⃣  BUILD & PUSH IMAGE
+# ────────────────────────────────────────────────────────────
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read #This is required for actions/checkout
+      contents: read         # required for actions/checkout
 
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      # ── TEMP DEBUG ──────────────────────────────────────────────
-      - name: ⛏️ verify secret lengths
-        run: |
-          echo "REGISTRY_LOGIN_SERVER len=${#REGISTRY_LOGIN_SERVER}"
-          echo "REGISTRY_USERNAME      len=${#REGISTRY_USERNAME}"
-          echo "REGISTRY_PASSWORD      len=${#REGISTRY_PASSWORD}"
-        env:
-          REGISTRY_LOGIN_SERVER: ${{ secrets.REGISTRY_LOGIN_SERVER }}
-          REGISTRY_USERNAME:     ${{ secrets.REGISTRY_USERNAME }}
-          REGISTRY_PASSWORD:     ${{ secrets.REGISTRY_PASSWORD }}
-      # ────────────────────────────────────────────────────────────
+    # ── (optional) secret-length sanity check ───────────────
+    # - name: ⛏️ verify secret lengths
+    #   run: |
+    #     echo "REGISTRY_LOGIN_SERVER len=${#REGISTRY_LOGIN_SERVER}"
+    #     echo "REGISTRY_USERNAME      len=${#REGISTRY_USERNAME}"
+    #     echo "REGISTRY_PASSWORD      len=${#REGISTRY_PASSWORD}"
+    #   env:
+    #     REGISTRY_LOGIN_SERVER: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+    #     REGISTRY_USERNAME:     ${{ secrets.REGISTRY_USERNAME }}
+    #     REGISTRY_PASSWORD:     ${{ secrets.REGISTRY_PASSWORD }}
+    # ────────────────────────────────────────────────────────
 
-      - name: Log in to container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.REGISTRY_LOGIN_SERVER }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
+    - name: Log in to ACR
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+        username: ${{ secrets.REGISTRY_USERNAME }}
+        password: ${{ secrets.REGISTRY_PASSWORD }}
 
-      - name: Build and push Docker image
-        run: |
-          docker build -t ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }} \
-                       -f dockerfile .
-          docker push  ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }}
+    - name: Build & push image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: dockerfile                  # change to Dockerfile if that’s the name
+        push: true
+        tags: ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }}
 
-
+# ────────────────────────────────────────────────────────────
+# 2️⃣  DEPLOY TO AZURE
+# ────────────────────────────────────────────────────────────
   deploy:
     runs-on: ubuntu-latest
-    needs: build
-    
+    needs: build            # wait for image to be pushed
+
     permissions:
-      id-token: write #This is required for requesting the JWT
-      contents: read #This is required for actions/checkout
+      id-token: write       # for OIDC login
+      contents: read
 
     steps:
-      - name: Login to Azure
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_993C9A456F1E4089B56B5CF329D0BF1D }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_290B337912884FBBBE4FE16062C5D5D8 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_8438F652E74442D8A0478EB2E5D6168E }}
+    - name: Azure login (OIDC)
+      uses: azure/login@v2
+      with:
+        client-id:       ${{ secrets.AZUREAPPSERVICE_CLIENTID_993C9A456F1E4089B56B5CF329D0BF1D }}
+        tenant-id:       ${{ secrets.AZUREAPPSERVICE_TENANTID_290B337912884FBBBE4FE16062C5D5D8 }}
+        subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_8438F652E74442D8A0478EB2E5D6168E }}
 
-      - name: 'Deploy container to Azure Web App'
-        uses: azure/webapps-deploy@v3
-        id: deploy-to-webapp
-        with:
-          app-name: 'bridge-delay-app'
-          slot-name: 'Production'
-          images: ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }}
-          
+    - name: Deploy container to Web App
+      uses: azure/webapps-deploy@v3
+      with:
+        app-name:  bridge-delay-app
+        slot-name: Production
+        images:    ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }}
