@@ -214,8 +214,9 @@ def check_and_notify():
 
 # ── Run forever, polling once a minute ───────────────────────────────────────
 if __name__ == "__main__":
-    # sanity checks
-    for var in ("IMAGE_URL","TWILIO_ACCOUNT_SID","TWILIO_AUTH_TOKEN","TWILIO_FROM_NUMBER","TWILIO_TO_NUMBERS"):
+    required = ("IMAGE_URL","TWILIO_ACCOUNT_SID","TWILIO_AUTH_TOKEN",
+                "TWILIO_FROM_NUMBER","TWILIO_TO_NUMBERS")
+    for var in required:
         if not os.environ.get(var):
             print(f"⚠️ Missing env var {var}; exiting.")
             exit(1)
@@ -227,4 +228,5 @@ if __name__ == "__main__":
         except Exception as e:
             print("❌ Error during check:", e)
         time.sleep(60)
+
 
