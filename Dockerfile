@@ -21,8 +21,6 @@ COPY . .
 EXPOSE 80
 
 # 7️⃣ Launch both your monitor and webhook
-CMD ["bash", "-lc", "\
-    python main.py & \
-    exec gunicorn --bind=0.0.0.0:80 --workers=4 webhook:app \
-  "]
-
+CMD ["bash","-c", \
+     "python main.py & \
+      exec gunicorn --bind 0.0.0.0:${PORT:-80} webhook:app"]
