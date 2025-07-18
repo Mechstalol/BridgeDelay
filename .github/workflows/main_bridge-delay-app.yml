@@ -40,7 +40,7 @@ jobs:
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: dockerfile                  # change to Dockerfile if that’s the name
+        file: Dockerfile                  # change to Dockerfile if that’s the name
         push: true
         tags: ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }}
 
