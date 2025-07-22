@@ -1,40 +1,42 @@
-/* ── DESIGN TOKENS ─────────────────────────────────── */
-:root {
-  --bg: #111316;           /* page background */
-  --bg-alt: #181b20;       /* darker bubble background */
-  --fg: #e8e8e8;           /* primary text */
-  --fg-muted: #a0a3a8;     /* muted text */
-  --accent: #0a84ff;       /* iOS blue */
-  --radius: 18px;          /* base corner radius */
-}
+/* -------------------------------------------------- */
+/*  HOME-PAGE STYLES  (relies on tokens from core.css)*/
+/* -------------------------------------------------- */
 
-/* ── GLOBAL RESET ─────────────────────────────────── */
+/* 0. RESET  +  FONT STACK
+   (leave tokens in core.css; this file uses them)    */
 *,
 *::before,
-*::after { box-sizing: border-box; }
+*::after {
+  box-sizing: border-box;
+}
 
-html, body {
+html,
+body {
   margin: 0;
   padding: 0;
-  /* font-family: "Coolvetica", "Helvetica Neue", Arial, sans-serif; */
+
+  /* system-UI font family (matches signup page) */
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+
   background: var(--bg);
   color: var(--fg);
 }
 
-/* ── NAVBAR ────────────────────────────────────────── */
+/* 1. NAVBAR ---------------------------------------------------- */
 .navbar {
   position: sticky;
   top: 0;
+  z-index: 999;
+
   display: flex;
   justify-content: space-between;
   align-items: center;
+
   padding: 1rem 2rem;
   background: rgba(24, 27, 32, 0.8);
   backdrop-filter: blur(8px);
-  border-bottom: 1px solid rgba(255,255,255,0.05);
-
-  /* NEW: keep navbar above everything else */
-  z-index: 999;         /* any number higher than the cards’ default */
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .logo {
@@ -43,84 +45,74 @@ html, body {
   color: var(--fg);
   text-decoration: none;
 }
+
 .navbar nav a {
   margin-left: 1.5rem;
   color: var(--fg-muted);
   text-decoration: none;
   transition: color 0.2s;
 }
-.navbar nav a:hover { color: var(--fg); }
 
-/* ── HERO ─────────────────────────────────────────── */
+.navbar nav a:hover {
+  color: var(--fg);
+}
+
+/* 2. HERO ------------------------------------------------------ */
 .hero {
   max-width: 900px;
-  margin: 6rem auto 4rem;
+  margin: 8rem auto 5rem;                 /* extra breathing room */
   text-align: center;
   padding: 0 1rem;
 }
+
 .hero__title {
-  font-size: clamp(2.5rem, 5vw + 1rem, 4rem);
+  font-size: clamp(3.25rem, 8vw + 1rem, 5.5rem); /* larger headline */
   line-height: 1.1;
   margin: 0 0 1rem;
+  letter-spacing: -0.02em;
 }
-.accent         { color: var(--accent); }
-.hero__subtitle { font-size: 1.125rem; color: var(--fg-muted); margin-bottom: 2.5rem; }
+
+.accent {
+  color: var(--accent);
+}
+
+.hero__subtitle {
+  font-size: 1.35rem;                     /* bigger subtitle */
+  max-width: 60ch;
+  margin: 0 auto 3rem;
+  color: var(--fg-muted);
+}
+
 .cta {
-  padding: 0.85rem 2rem;
-  font-size: 1rem;
+  font-size: 1.15rem;
+  padding: 1rem 2.4rem;
+  border: none;
+  border-radius: calc(var(--radius) * 1.2);
   background: var(--accent);
   color: #fff;
-  border: none;
-  border-radius: var(--radius);
   cursor: pointer;
   transition: transform 0.15s, box-shadow 0.15s;
 }
-.cta:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(10,132,255,0.35); }
 
-/* ── FEATURES GRID ────────────────────────────────── */
-.features {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 2rem;
-  max-width: 1100px;
-  margin: 0 auto 6rem;
-  padding: 0 1rem;
-}
-.card {
-  background: var(--bg-alt);
-  padding: 2rem;
-  border-radius: var(--radius);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
-  transition: transform 0.15s, box-shadow 0.15s;
-}
-.card:hover { transform: translateY(-4px); box-shadow: 0 10px 25px rgba(0,0,0,0.35); }
-.card h2 { margin-top: 0; color: var(--accent); }
-.card p  { color: var(--fg-muted); }
-
-/* ── FOOTER ───────────────────────────────────────── */
-.footer {
-  text-align: center;
-  padding: 2rem 1rem 3rem;
-  color: var(--fg-muted);
-  border-top: 1px solid rgba(255,255,255,0.05);
+.cta:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(10, 132, 255, 0.35);
 }
 
-/* ── MOBILE NAV HIDE ─────────────────────────────── */
-@media (max-width: 480px) { .navbar nav { display: none; } }
-
-/* ── SMS DEMO (showcase rows) ─────────────────────── */
+/* 3. SMS DEMO -------------------------------------------------- */
 .sms-demo {
   max-width: 1100px;
   margin: 0 auto 6rem;
   padding: 0 1rem;
 }
+
 .sms-demo__title {
   text-align: center;
   margin-bottom: 3rem;
   color: var(--accent);
 }
 
-/* entire row card */
+/* one showcase row */
 .sms-pair {
   position: relative;
   display: flex;
@@ -131,121 +123,104 @@ html, body {
   padding: 2.75rem;
   margin-bottom: 4.5rem;
 
-  background: #1d1f23;                /* solid lighter-grey slate */
-  border-radius: calc(var(--radius) * 1.6); /* ≈29 px */
-  box-shadow: 0 16px 44px rgba(0,0,0,0.55);
-  overflow: visible;                  /* allow bubble lift */
+  background: #1d1f23;
+  border-radius: calc(var(--radius) * 1.6);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
+  overflow: visible;
 }
-/* flip columns for variation */
-.sms-pair.flip .sms-copy     { order: 2; }
-.sms-pair.flip .bubbles-wrap { order: 1; }
+
+/* flip layout for variation */
+.sms-pair.flip .sms-copy       { order: 2; }
+.sms-pair.flip .bubbles-wrap   { order: 1; }
 
 /* text column */
 .sms-copy {
   flex: 1 1 250px;
   min-width: 230px;
-  padding-right: 1.25rem;             /* gutter between text & chat */
+  padding-right: 1.25rem;
 }
+
 .sms-copy h3 { margin-top: 0; color: var(--fg); }
 .sms-copy p  { color: var(--fg-muted); }
 
-/* chat column wrapper (lift only) */
+/* chat column */
 .bubbles-wrap {
-  position: relative;
   flex: 1 1 260px;
   min-width: 250px;
   padding: 1.25rem 1.75rem;
-  transform: translateY(-6px);        /* subtle lift */
+  background: #31343d;
+  border-radius: calc(var(--radius) * 1.2);
+  transform: translateY(-6px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
-/* no glow */
-.bubbles-wrap::before { display: none; }
+.bubbles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
 
-/* bubble stack */
-.bubbles { display: flex; flex-direction: column; gap: 0.7rem; }
-
-/* individual bubble */
 .bubble {
   max-width: 260px;
   padding: 0.75rem 1rem;
   font-size: 0.9rem;
   line-height: 1.35;
   border-radius: calc(var(--radius) * 1.2);
-  word-wrap: break-word;
-  box-shadow: 0 6px 16px rgba(0,0,0,0.55);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.55);
 }
-.bubble.in  { background: var(--bg-alt); color: var(--fg); }
+
+.bubble.in  { background: var(--bg-alt); }
 .bubble.out { background: var(--accent); color: #fff; align-self: flex-end; }
 
-/* stack columns on mobile */
-@media (max-width: 640px) {
-  .sms-pair     { flex-direction: column; }
-  .bubbles-wrap { transform: translateY(0); }
+/* 4. FEATURE GRID --------------------------------------------- */
+.features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 2rem;
+  max-width: 1100px;
+  margin: 0 auto 6rem;
+  padding: 0 1rem;
 }
 
-/* ── PATCH: put the card BACK behind chat bubbles ── */
-.bubbles-wrap{
-  /* solid slate panel just for the chat column */
-  background:#31343d;                 /* slightly lighter than page bg */
-  border-radius:calc(var(--radius)*1.2); /* ∼22 px if radius = 18 */
-  padding:1.25rem 1.75rem;            /* keep existing inner gutter */
-
-  /* subtle shadow so it reads as its own layer */
-  box-shadow:0 8px 24px rgba(0,0,0,0.5);
-
-  /* keep the small lift */
-  transform:translateY(-6px);
+.card {
+  background: var(--bg-alt);
+  padding: 2rem;
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s, box-shadow 0.15s;
 }
 
-/* remove any leftover glow on the wrapper (if still present) */
-.bubbles-wrap::before{display:none;}
-
-/* ── REVEAL ANIMATION ─────────────────────────────── */
-/* start state */
-.reveal {
-  opacity: 0;
-  transform: translateY(40px);   /* slight rise */
-  transition: opacity .4s ease-out, transform .4s cubic-bezier(.22,.82,.56,1);
+.card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.35);
 }
 
-/* end state (JS will add this class) */
-.reveal.in-view {
-  opacity: 1;
-  transform: translateY(0);
-}
+.card h2 { margin-top: 0; color: var(--accent); }
+.card p  { color: var(--fg-muted); }
 
-/* ── SIGN-UP SECTION ─────────────────────────────── */
-.signup{
+/* 5. INLINE SIGN-UP ------------------------------------------- */
+.signup {
   max-width: 650px;
   margin: 0 auto 6rem;
   text-align: center;
   background: #1d1f23;
   padding: 3rem 2rem;
-  border-radius: calc(var(--radius) * 1.4);     /* ~25-30px */
-  box-shadow: 0 14px 38px rgba(0,0,0,.55);
+  border-radius: calc(var(--radius) * 1.4);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.55);
 }
 
-.signup__title{
-  margin: 0 0 1rem;
-  font-size: 2rem;
-  color: var(--accent);
-}
+.signup__title   { margin: 0 0 1rem; font-size: 2rem; color: var(--accent); }
+.signup__tagline { margin: 0 0 2rem; color: var(--fg-muted); }
 
-.signup__tagline{
-  margin: 0 0 2rem;
-  color: var(--fg-muted);
-  font-size: 1.05rem;
-}
-
-.signup__form{
+.signup__form {
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
   justify-content: center;
-  flex-wrap: wrap;
   margin-bottom: 1.5rem;
 }
 
-.signup__form input[type="email"]{
+.signup__form input {
   flex: 1 1 260px;
   min-width: 240px;
   padding: 0.9rem 1rem;
@@ -253,10 +228,9 @@ html, body {
   border-radius: var(--radius);
   background: var(--bg-alt);
   color: var(--fg);
-  font-size: 1rem;
 }
 
-.signup__form button{
+.signup__form button {
   padding: 0.9rem 2rem;
   border: none;
   border-radius: var(--radius);
@@ -264,23 +238,42 @@ html, body {
   color: #fff;
   font-size: 1rem;
   cursor: pointer;
-  transition: transform .15s, box-shadow .15s;
+  transition: transform 0.15s, box-shadow 0.15s;
 }
-.signup__form button:hover{
+
+.signup__form button:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(10,132,255,.35);
+  box-shadow: 0 8px 20px rgba(10, 132, 255, 0.35);
 }
 
-.signup__note{
-  display: block;
+.signup__note { color: var(--fg-muted); font-size: 0.85rem; }
+
+/* 6. FOOTER ---------------------------------------------------- */
+.footer {
+  text-align: center;
+  padding: 2rem 1rem 3rem;
   color: var(--fg-muted);
-  font-size: 0.85rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-/* mobile: stack input & button */
-@media(max-width:480px){
-  .signup__form{ flex-direction: column; }
-  .signup__form input{ flex: 1 1 auto; }
+/* 7. REVEAL ANIMATION ----------------------------------------- */
+.reveal {
+  opacity: 0;
+  transform: translateY(40px);
+  transition:
+    opacity 0.4s ease-out,
+    transform 0.4s cubic-bezier(0.22, 0.82, 0.56, 1);
+  transition-delay: var(--rv-delay, 0s);   /* custom per-element delay */
 }
 
+.reveal.in-view {
+  opacity: 1;
+  transform: translateY(0);
+}
 
+/* 8. RESPONSIVE TWEAKS ---------------------------------------- */
+@media (max-width: 640px) {
+  .sms-pair        { flex-direction: column; }
+  .bubbles-wrap    { transform: none; }
+  .signup__form    { flex-direction: column; }
+}

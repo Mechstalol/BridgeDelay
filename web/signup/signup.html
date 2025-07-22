@@ -3,22 +3,24 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BridgeDelay – Sign Up</title>
-  <link rel="stylesheet" href="style.css" />
+  <title>BridgeDelay • Sign Up</title>
+
+  <!-- only this page’s CSS -->
+  <link rel="stylesheet" href="signup.css">
 </head>
 
 <body>
-  <!-- NAVBAR (reuse the same markup so branding is consistent) -->
+  <!-- NAVBAR -->
   <header class="navbar">
-    <a href="index.html" class="logo">BridgeDelay</a>
+    <a href="../main.html" class="logo">BridgeDelay</a>
     <nav>
-      <a href="index.html#features">Features</a>
-      <a href="signup.html" aria-current="page">Sign Up</a>
+      <a href="../main.html#features">Features</a>
+      <a href="./" aria-current="page">Sign Up</a>
     </nav>
   </header>
 
-  <!-- HERO-STYLE CALLOUT -->
-  <section class="hero" style="margin-top:4rem">
+  <!-- HERO TAGLINE -->
+  <section class="hero">
     <h1 class="hero__title">Join the Early-Access List</h1>
     <p class="hero__subtitle">
       Get notified the moment we launch beta alerts for the Lions Gate Bridge.
@@ -26,28 +28,39 @@
     </p>
   </section>
 
-  <!-- CENTERED SIGN-UP CARD (same component you added on the homepage) -->
+  <!-- SIGN-UP CARD -->
   <section class="signup">
-    <h2 class="signup__title">Sign Up</h2>
-    <p class="signup__tagline">Enter your email—nothing else required.</p>
+    <h2 class="signup__title">Create Your Account</h2>
+    <p class="signup__tagline">Enter your details—no spam, ever.</p>
 
     <form class="signup__form" action="#" method="POST">
-      <input type="email"
-             name="email"
-             placeholder="you@example.com"
-             required
-             aria-label="Email address" />
-      <button type="submit">Notify Me</button>
+      <!-- row 1 -->
+      <input type="text"     name="first"  placeholder="First name"  required>
+      <input type="text"     name="last"   placeholder="Last name"   required>
+
+      <!-- row 2 -->
+      <input type="email"    name="email"  placeholder="Email"       required>
+      <input type="tel"      name="phone"  placeholder="Phone"       required>
+
+      <!-- row 3 -->
+      <input type="password" name="pass"   placeholder="Password (min 8)"
+             minlength="8"   required>
+      <input type="password" name="pass2"  placeholder="Confirm password"
+             minlength="8"   required>
+
+      <button type="submit">Create Account</button>
     </form>
 
     <small class="signup__note">
-      We’ll send a single invite when the beta opens.
+      We’ll email you once when the beta opens—nothing else.
     </small>
   </section>
 
-  <!-- FOOTER -->
   <footer class="footer">
     <p>© 2025 BridgeDelay • Made in 🇨🇦</p>
   </footer>
+
+  <!-- (optional) page-specific JS -->
+  <script src="signup.js"></script>
 </body>
 </html>

@@ -1,0 +1,23 @@
+/* ── CORE TOKENS & RESET (shared by every page) ───── */
+:root{
+  --bg:#111316;
+  --bg-alt:#181b20;
+  --panel:#1e2025;
+  --bubble:#181b20;
+  --fg:#e8e8e8;
+  --fg-muted:#9ca0a6;
+  --accent:#0a84ff;
+  --radius:18px;
+}
+
+*,
+*::before,
+*::after{box-sizing:border-box}
+
+html,body{
+  margin:0;
+  padding:0;
+  background:var(--bg);
+  color:var(--fg);
+  /* font-family:"Coolvetica","Helvetica Neue",Arial,sans-serif; */
+}
