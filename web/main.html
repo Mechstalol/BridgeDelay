@@ -2,17 +2,139 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Bridge Delay</title>
 
-  <!-- ① link your CSS -->
+  <!-- Coolvetica (self-host) -->
+  <style>
+    @font-face {
+      font-family: "Coolvetica";
+      src: url("Coolvetica.woff2") format("woff2");
+      font-display: swap;
+    }
+  </style>
+
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
-  <h1>Hello, Bridge Delay!</h1>
-  <button id="ping">Click me</button>
 
-  <!-- ② link your JS (bottom of body = faster page load) -->
-  <script src="main.js"></script>
+<script src="main.js"></script>
+
+<body>
+  <!-- ── NAVBAR ─────────────────────────────────────────────── -->
+  <header class="navbar">
+    <a href="#" class="logo">BridgeDelay</a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="signup.html">Sign Up</a>
+    </nav>
+  </header>
+
+  <!-- ── HERO / TITLE ───────────────────────────────────────── -->
+  <section class="hero">
+    <h1 class="hero__title">
+      Know the Bridge<br>is Clear—<span class="accent">Before</span> You Cross.
+    </h1>
+    <p class="hero__subtitle">
+      Real-time Lions Gate traffic alerts delivered straight to your phone.
+    </p>
+    <button class="cta">Get Early Access</button>
+  </section>
+
+  <!-- ── SMS DEMO ───────────────────────────────────────────── -->
+  <section class="sms-demo">
+    <h2 class="sms-demo__title">See BridgeDelay in Action</h2>
+
+    <!-- ① Automatic alert -->
+    <div class="sms-pair">
+      <div class="sms-copy">
+        <h3>Real-Time Alerts</h3>
+        <p>We ping you the moment a delay is detected—no app required.</p>
+      </div>
+
+      <!-- chat column with lighter-grey card -->
+      <div class="bubbles-wrap">
+        <div class="bubbles">
+          <div class="bubble in">
+            🚦 BridgeDelay: Lions Gate Bridge delayed&nbsp;15&nbsp;min. Expect heavy traffic.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ② Status on demand (flipped) -->
+    <div class="sms-pair flip">
+      <div class="sms-copy">
+        <h3>Ask for Status Anytime</h3>
+        <p>Text <code>STATUS</code> and we’ll reply instantly.</p>
+      </div>
+
+      <div class="bubbles-wrap">
+        <div class="bubbles">
+          <div class="bubble out">Status?</div>
+          <div class="bubble in">✅ Bridge is clear — 8&nbsp;min travel time.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ③ Quiet-hour scheduling -->
+    <div class="sms-pair">
+      <div class="sms-copy">
+        <h3>Custom Quiet Hours</h3>
+        <p>Tell us when you commute and we’ll only alert you then.</p>
+      </div>
+
+      <div class="bubbles-wrap">
+        <div class="bubbles">
+          <div class="bubble out">Notify me weekdays 7-9 AM.</div>
+          <div class="bubble in">📅 Got it! We’ll only alert you during that window.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── FEATURE SHOWCASE ───────────────────────────────────── -->
+  <section id="features" class="features">
+    <article class="card">
+      <h2>Instant SMS Pings</h2>
+      <p>No app install—just texts when lanes close or re-open.</p>
+    </article>
+
+    <article class="card">
+      <h2>AI-Powered Predictions</h2>
+      <p>We blend live feeds &amp; historical patterns for extra-smart ETAs.</p>
+    </article>
+
+    <article class="card">
+      <h2>Hands-Free Setup</h2>
+      <p>Subscribe once; we handle the rest in the background.</p>
+    </article>
+  </section>
+
+  <!-- ── SIGN-UP SECTION ────────────────────────────── -->
+<section class="signup">
+  <h2 class="signup__title">Sign Up</h2>
+  <p class="signup__tagline">
+    Sign up for North Van Delays today - no spam, ever.
+  </p>
+
+  <form class="signup__form" action="#" method="POST">
+    <input type="email"
+           name="email"
+           placeholder="you@example.com"
+           required
+           aria-label="Email address" />
+    <button type="submit">Sign Up</button>
+  </form>
+
+  <small class="signup__note">
+    We’ll send a single invite when we open the beta. That’s it.
+  </small>
+</section>
+
+
+  <!-- ── FOOTER ─────────────────────────────────────────────── -->
+  <footer class="footer" id="about">
+    <p>© 2025 BridgeDelay • Made in 🇨🇦</p>
+  </footer>
 </body>
 </html>
-
