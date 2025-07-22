@@ -292,7 +292,7 @@ body {
 
 
 /* ═══ FINAL MOBILE SMS SNAP-TO-CONTENT ═══ */
-@media (max-width: 540px) {
+@media (max-width: 675px) {
 
   /* row card */
   .sms-pair {
