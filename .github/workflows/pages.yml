@@ -1,0 +1,36 @@
+# .github/workflows/pages.yml
+name: Deploy web/ folder to GitHub Pages
+
+on:
+  push:
+    branches: [main]     # ⬅️ change if your default branch is 'master'
+  workflow_dispatch:     # lets you trigger a manual deploy from the Actions tab
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write        # needed for the deploy token
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5   # official helper :contentReference[oaicite:0]{index=0}
+
+      - name: Upload site from /web
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./web                      # <-- YOUR folder!
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
