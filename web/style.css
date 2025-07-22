@@ -277,3 +277,85 @@ body {
   .bubbles-wrap    { transform: none; }
   .signup__form    { flex-direction: column; }
 }
+
+
+#dev-viewport-toggle{
+  position:fixed;bottom:1rem;right:1rem;
+  padding:.6rem 1rem;font-size:.85rem;font-weight:600;
+  background:#0a84ff;color:#fff;border:none;border-radius:var(--radius);
+  box-shadow:0 4px 12px rgba(0,0,0,.35);cursor:pointer;z-index:1000;
+}
+#dev-viewport-toggle[aria-pressed="true"]{
+  background:#d93025;                 /* red when mobile mode is ON */
+}
+
+
+
+/* ═══ FINAL MOBILE SMS SNAP-TO-CONTENT ═══ */
+@media (max-width: 540px) {
+
+  /* row card */
+  .sms-pair {
+    display: block;
+    padding: 1rem;               /* tight, equal on all sides */
+    row-gap: 0.85rem;
+  }
+
+  /* text column */
+  .sms-copy { margin-bottom: 0.85rem; }
+  .sms-copy p { margin: 0; }
+
+  /* chat panel */
+  .bubbles-wrap {
+    display: flex;
+    flex-direction: column;
+    width: 100%;                 /* full row width */
+    padding: 0.85rem;
+    background: #31343d;         /* desktop slate */
+    border-radius: calc(var(--radius) * 1.2);
+    transform: none;
+  }
+
+  /* bubbles: 94 % width, auto-centered */
+  .bubble {
+    width: 94%;
+    max-width: 94%;
+    align-self: center;
+  }
+}
+
+/* same when dev toggle forces mobile ------------------------- */
+body.force-mobile .sms-pair       { display:block;padding:1rem;row-gap:.85rem; }
+body.force-mobile .sms-copy       { margin-bottom:.85rem; }
+body.force-mobile .sms-copy p     { margin:0; }
+body.force-mobile .bubbles-wrap   { display:flex;flex-direction:column;width:100%;
+                                     padding:.85rem;background:#31343d;
+                                     border-radius:calc(var(--radius)*1.2);transform:none; }
+body.force-mobile .bubble         { width:94%;max-width:94%;align-self:center; }
+/* ═════════════════════════════════════════ */
+
+/* ═══  MOBILE BUBBLE-WIDTH FIX  (≤540 px + .force-mobile)  ═══ */
+@media (max-width: 540px) {
+
+  /* row card – reasonable padding */
+  .sms-pair           { padding: 1rem; row-gap: 1rem; }
+
+  /* chat panel */
+  .bubbles-wrap       { padding: 1rem; }
+
+  /* core rule – bubble shrinks to its own text, capped at 80 % of panel */
+  .bubble             { width: auto; max-width: 80%; }
+
+  /* align like real chat */
+  .bubble.in          { align-self: flex-start; }   /* gray incoming  */
+  .bubble.out         { align-self: flex-end; }     /* blue outgoing  */
+}
+
+/* same behaviour when dev toggle adds .force-mobile ---------- */
+body.force-mobile .sms-pair        { padding:1rem;row-gap:1rem; }
+body.force-mobile .bubbles-wrap    { padding:1rem; }
+body.force-mobile .bubble          { width:auto;max-width:80%; }
+body.force-mobile .bubble.in       { align-self:flex-start; }
+body.force-mobile .bubble.out      { align-self:flex-end; }
+/* ═════════════════════════════════════════════════════════════ */
+

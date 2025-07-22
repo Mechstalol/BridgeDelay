@@ -22,3 +22,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   revealEls.forEach(el => observer.observe(el));
 });
+
+
+/* ═════════ DEV-ONLY VIEWPORT TOGGLE ═════════ */
+document.getElementById("dev-viewport-toggle")?.addEventListener("click", e => {
+  const pressed = e.currentTarget.getAttribute("aria-pressed") === "true";
+  e.currentTarget.setAttribute("aria-pressed", String(!pressed));
+  document.body.classList.toggle("force-mobile", !pressed);
+});
