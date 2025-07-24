@@ -10,7 +10,6 @@
   <link rel="stylesheet" href="style.css">
 </head>
 
-
 <body>
   <!-- ── NAVBAR ─────────────────────────────────────────────── -->
   <header class="navbar">
@@ -108,8 +107,10 @@
     <h2 class="signup__title">Sign Up</h2>
     <p class="signup__tagline">Join North Van Delays today—no spam, ever.</p>
 
-    <form class="signup__form" action="/api/signup" method="POST">
+    <!--               ▼▼ IDs the JS will hook onto ▼▼            -->
+    <form id="signup-form" class="signup__form">
       <input
+        id="email"
         type="email"
         name="email"
         placeholder="you@example.com"
@@ -119,7 +120,7 @@
       <button type="submit">Sign Up</button>
     </form>
 
-    <small class="signup__note">
+    <small id="signup-status" class="signup__note" aria-live="polite">
       We’ll send a single invite when we open the beta.
     </small>
   </section>
@@ -129,7 +130,7 @@
     <p>© 2025 BridgeDelay • Made in 🇨🇦</p>
   </footer>
 
-  <!-- reveal-animation script, runs after DOM is ready -->
+  <!-- reveal-animation + sign-up script -->
   <script src="main.js" defer></script>
 </body>
 </html>
