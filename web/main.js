@@ -35,21 +35,20 @@ document
   });
 
 /* ─────────────────────────────────────────────────────────────
-   NEW: Sign-up form → Azure API
+   Sign-up form → Azure API   (AJAX / fetch)
 ──────────────────────────────────────────────────────────────*/
-const API_BASE =
-  "https://bridge-delay-app-d4cfc5ercda0gqbk.westus2-01.azurewebsites.net";
+const API = "https://bridge-delay-app-d4cfc5ercda0gqbk.westus2-01.azurewebsites.net";
 
 const form   = document.getElementById("signup-form");
 const input  = document.getElementById("email");
 const status = document.getElementById("signup-status");
 
 form?.addEventListener("submit", async e => {
-  e.preventDefault();
+  e.preventDefault();                          // stop full-page POST
   status.textContent = "Sending…";
 
   try {
-    const res  = await fetch(`${API_BASE}/api/signup`, {
+    const res  = await fetch(`${API}/api/signup`, {
       method : "POST",
       headers: { "Content-Type": "application/json" },
       body   : JSON.stringify({ email: input.value.trim() })
