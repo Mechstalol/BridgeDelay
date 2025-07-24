@@ -1,6 +1,7 @@
 import os
 import json
-from flask import Flask, request, Response
+from flask import Flask, request, Response, jsonify
+from werkzeug.security import generate_password_hash, check_password_hash
 from twilio.twiml.messaging_response import MessagingResponse
 from main import (
     load_user_settings,
@@ -21,9 +22,65 @@ SEV_EMOJI = {
     3: "🔴",
 }
 
+# Basic user account storage
+USER_DB = "accounts.json"
+
+
+def load_accounts():
+    try:
+        with open(USER_DB, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
+
+def save_accounts(data) -> None:
+    with open(USER_DB, "w") as f:
+        json.dump(data, f, indent=2)
+
 
 
 app = Flask(__name__)
+
+
+@app.route("/api/signup", methods=["POST"])
+def signup():
+    data = request.get_json() or request.form
+    if "email" not in data:
+        return jsonify({"error": "Email required"}), 400
+
+    accounts = load_accounts()
+    if any(u["email"] == data["email"] for u in accounts):
+        return jsonify({"error": "Email already exists"}), 400
+
+    account = {
+        "email": data["email"],
+        "first": data.get("first", ""),
+        "last": data.get("last", ""),
+        "phone": data.get("phone", ""),
+    }
+
+    if "pass" in data:
+        account["password"] = generate_password_hash(data["pass"])
+    accounts.append(account)
+    save_accounts(accounts)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    data = request.get_json() or request.form
+    email = data.get("email")
+    pw = data.get("pass")
+    if not email or not pw:
+        return jsonify({"error": "Missing credentials"}), 400
+
+    accounts = load_accounts()
+    user = next((u for u in accounts if u["email"] == email), None)
+    if not user or not check_password_hash(user["password"], pw):
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    return jsonify({"status": "ok"})
 
 @app.route("/sms", methods=["POST"])
 def sms_webhook():
