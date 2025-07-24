@@ -5,4 +5,5 @@ pytesseract
 twilio
 Flask
 gunicorn>=21.2
+flask-cors>=4.0
 
