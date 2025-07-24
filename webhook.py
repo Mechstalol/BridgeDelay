@@ -1,6 +1,7 @@
 import os
 import json
 from flask import Flask, request, Response, jsonify
+from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from twilio.twiml.messaging_response import MessagingResponse
 from main import (
@@ -41,6 +42,7 @@ def save_accounts(data) -> None:
 
 
 app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 
 @app.route("/api/signup", methods=["POST"])
