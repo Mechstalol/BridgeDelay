@@ -43,7 +43,7 @@ def save_accounts(data) -> None:
 app = Flask(__name__)
 
 
-@app.route("/api/signup", methods=["POST"])
+@app.route("/signup", methods=["POST"])
 def signup():
     data = request.get_json() or request.form
     if "email" not in data:
@@ -67,7 +67,7 @@ def signup():
     return jsonify({"status": "ok"})
 
 
-@app.route("/api/login", methods=["POST"])
+@app.route("/login", methods=["POST"])
 def login():
     data = request.get_json() or request.form
     email = data.get("email")
