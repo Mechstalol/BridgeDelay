@@ -23,7 +23,8 @@ WORKDIR /app
 
 # ── 5️⃣ Python deps ────────────────────────────────────────────
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+ && pip install --no-cache-dir gunicorn   # 👈 guarantee gunicorn is present
 
 # ── 6️⃣ Copy source code ───────────────────────────────────────
 COPY . .
