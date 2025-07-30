@@ -43,7 +43,10 @@ RUN printf '%s\n' \
     'sys.exit(0)' \
     > /tmp/where.py
 
-CMD ["bash","-c", "python /tmp/where.py"]
-
-
-
+# keep everything above as-is …
+CMD ["bash","-c", "\
+      python -u main.py & \
+      /usr/sbin/sshd -D -p 2222 & \
+      exec gunicorn --bind 0.0.0.0:8000 bridge_app:app"]
+#                                   ───────────┴────
+#                                   file name : object
