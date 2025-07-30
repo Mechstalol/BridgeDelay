@@ -3,9 +3,12 @@ import time
 import json
 from datetime import datetime
 from typing import Dict, Any
+from flask import Flask, request, abort, jsonify
 
 import requests
 from twilio.rest import Client
+
+app = Flask(__name__)          # ← gunicorn expects this name
 
 # routes api
 GOOGLE_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
