@@ -35,9 +35,15 @@ EXPOSE 8000 2222
 # ── 8️⃣ Start Gunicorn directly (simpler to debug) ─────────────────────────
 EXPOSE 8000 2222
 
-CMD ["bash","-c", "\
-     python -u main.py & \
-     /usr/sbin/sshd -D -p 2222 & \
-     exec gunicorn --bind 0.0.0.0:8000 webhook:app"]
+# --- debug stub ---
+RUN printf '%s\n' \
+    'import importlib, sys, os; ' \
+    'm = importlib.import_module("webhook"); ' \
+    'print("[DEBUG] imported", m.__file__); ' \
+    'sys.exit(0)' \
+    > /tmp/where.py
+
+CMD ["bash","-c", "python /tmp/where.py"]
+
 
 
