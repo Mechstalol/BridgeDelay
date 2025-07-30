@@ -29,11 +29,9 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # ── 6️⃣ Copy source code ───────────────────────────────────────
 COPY . .
 
-# ── 7️⃣ Expose ports (80 = web API, 2222 = SSH tunnel) ─────────
-EXPOSE 80 2222
+# ── 7️⃣ Expose ports (8000 = web API expected by App Service, 2222 = SSH) ──
+EXPOSE 8000 2222
 
-# ── 8️⃣ CMD: monitor + sshd + gunicorn ─────────────────────────
-CMD ["bash","-c", "\
-      python -u main.py & \
-      /usr/sbin/sshd -D -p 2222 & \
-      exec gunicorn --bind 0.0.0.0:${PORT:-80} webhook:app" ]
+# ── 8️⃣ Start Gunicorn directly (simpler to debug) ─────────────────────────
+CMD ["gunicorn", "-b", "0.0.0.0:8000", "webhook:app"]
+
