@@ -200,3 +200,47 @@ if __name__ == "__main__":
         except Exception as e:
             print("❌ Error during check:", e)
         time.sleep(300)   # ← 5 minutes
+
+# health probe for Azure’s warm-up check
+@app.route("/", methods=["GET"])
+def health():
+    return "ok", 200
+
+
+# simple status endpoint you can call from your GitHub Pages JS
+@app.route("/api/status", methods=["GET"])
+def status():
+    snap = load_snapshot()        # helper you already wrote
+    return jsonify(snap if snap else {"msg": "no data yet"})
+
+
+# optional sign-up endpoint (POST JSON or form)
+@app.route("/api/signup", methods=["POST"])
+def signup():
+    phone = (
+        request.json.get("phone") if request.is_json else request.form.get("phone")
+    )
+    if not phone:
+        abort(400, "phone field is required")
+
+    users = load_user_settings()
+    if any(u["phone"] == phone for u in users):
+        return {"msg": "already registered"}, 200
+
+    users.append({
+        "phone": phone,
+        "threshold": 0,                         # customise if you wish
+        "windows": [{"start": "00:00","end": "23:59"}]
+    })
+    with open("user_settings.json", "w") as f:
+        json.dump(users, f)
+    return {"msg": "registered"}, 201
+
+
+# Twilio inbound SMS webhook (optional)
+@app.route("/sms", methods=["POST"])
+def sms_webhook():
+    if not request.form.get("From"):
+        abort(400)
+    # … your SMS-response logic …
+    return "<Response></Response>", 200
