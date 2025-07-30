@@ -1,58 +1,134 @@
-/* ── TOKENS & RESET ───────────────────────────────── */
-:root{
-  --bg:#111316;
-  --panel:#1e2025;
-  --field:#181b20;
-  --fg:#e8e8e8;
-  --fg-muted:#9ca0a6;
-  --accent:#0a84ff;
-  --radius:18px;
+/* ── TOKENS & RESET ─────────────────────────────────────────────── */
+:root {
+  --bg:          #111316;
+  --panel:       #1e2025;
+  --field:       #181b20;
+  --fg:          #e8e8e8;
+  --fg-muted:    #9ca0a6;
+  --accent:      #0a84ff;
+  --radius:      18px;
 }
-*,*::before,*::after{box-sizing:border-box}
-html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font-family:system-ui}
 
-/* ── NAVBAR ───────────────────────────────────────── */
-.navbar{
-  display:flex;justify-content:space-between;align-items:center;
-  padding:1rem 2rem;background:rgba(24,27,32,.85);backdrop-filter:blur(8px)
+*, *::before, *::after {
+  box-sizing: border-box;
 }
-.logo{font-weight:700;color:var(--fg);text-decoration:none}
-.navbar nav a{margin-left:1.5rem;color:var(--fg-muted);text-decoration:none;transition:.2s}
-.navbar nav a:hover{color:var(--fg)}
 
-/* ── HERO TAGLINE ─────────────────────────────────── */
-.hero{text-align:center;margin:4rem auto 3rem;max-width:700px;padding:0 1rem}
-.hero__title{margin:0 0 .75rem;font-size:2rem;font-weight:600}
-.hero__subtitle{margin:0;color:var(--fg-muted)}
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui;
+}
 
-/* ── SIGN-UP CARD ─────────────────────────────────── */
-.signup{
-  max-width:650px;margin:0 auto 6rem;text-align:center;
-  background:var(--panel);border-radius:calc(var(--radius)*1.6);
-  padding:3rem 2rem;box-shadow:0 16px 44px rgba(0,0,0,.55)
+/* ── NAVBAR ─────────────────────────────────────────────────────── */
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background: rgba(24, 27, 32, 0.85);
+  backdrop-filter: blur(8px);
 }
-.signup__title{margin:0 0 1rem;font-size:2rem;color:var(--accent)}
-.signup__tagline{margin:0 0 2rem;color:var(--fg-muted)}
 
-/* form grid: two inputs / row on ≥640 px, one per row on mobile */
-.signup__form{
-  display:grid;gap:1.2rem;margin-bottom:1.8rem;
-  grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
-  justify-content:center
+.logo {
+  font-weight: 700;
+  color: var(--fg);
+  text-decoration: none;
 }
-.signup__form input{
-  width:100%;padding:.9rem 1rem;border:none;border-radius:var(--radius);
-  background:var(--field);color:var(--fg);font-size:1rem
-}
-.signup__form button{
-  grid-column:1/-1;                       /* full-width button */
-  padding:.9rem 2rem;border:none;border-radius:var(--radius);
-  background:var(--accent);color:#fff;font-size:1rem;cursor:pointer;transition:.15s
-}
-.signup__form button:hover{
-  transform:translateY(-2px);
-  box-shadow:0 8px 20px rgba(10,132,255,.35)
-}
-.signup__note{color:var(--fg-muted);font-size:.85rem}
 
-/* ──
+.navbar nav a {
+  margin-left: 1.5rem;
+  color: var(--fg-muted);
+  text-decoration: none;
+  transition: 0.2s;
+}
+
+.navbar nav a:hover {
+  color: var(--fg);
+}
+
+/* ── HERO TAGLINE ──────────────────────────────────────────────── */
+.hero {
+  text-align: center;
+  margin: 4rem auto 3rem;
+  max-width: 700px;
+  padding: 0 1rem;
+}
+
+.hero__title {
+  margin: 0 0 0.75rem;
+  font-size: 2rem;
+  font-weight: 600;
+}
+
+.hero__subtitle {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+/* ── SIGN‑UP CARD ──────────────────────────────────────────────── */
+.signup {
+  max-width: 650px;
+  margin: 0 auto 6rem;
+  text-align: center;
+  background: var(--panel);
+  border-radius: calc(var(--radius) * 1.6);
+  padding: 3rem 2rem;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
+}
+
+.signup__title {
+  margin: 0 0 1rem;
+  font-size: 2rem;
+  color: var(--accent);
+}
+
+.signup__tagline {
+  margin: 0 0 2rem;
+  color: var(--fg-muted);
+}
+
+/* Form grid: two inputs/row on ≥ 640 px, one per row on mobile */
+.signup__form {
+  display: grid;
+  gap: 1.2rem;
+  margin-bottom: 1.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  justify-content: center;
+}
+
+.signup__form input {
+  width: 100%;
+  padding: 0.9rem 1rem;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--field);
+  color: var(--fg);
+  font-size: 1rem;
+}
+
+.signup__form button {
+  grid-column: 1 / -1;               /* full‑width button */
+  padding: 0.9rem 2rem;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: 0.15s;
+}
+
+.signup__form button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(10, 132, 255, 0.35);
+}
+
+.signup__note {
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+}
+
+/* ── END (add more sections below as needed) ───────────────────── */
