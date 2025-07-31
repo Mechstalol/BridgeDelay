@@ -226,7 +226,7 @@ if __name__ == "__main__":
         print("⚠️ Missing env vars:", ", ".join(missing))
         exit(1)
 
-    print("▶️  Bridge monitor started – polling every 60 s…")
+    print("▶️  Bridge monitor started – polling every 5 minutes…")
     while True:
         try:
             check_and_notify()
