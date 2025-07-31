@@ -12,7 +12,7 @@ app = Flask(__name__)          # ← gunicorn expects this name
 
 # routes api
 GOOGLE_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRouteMatrix"
+ROUTES_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
 HEADERS = {
     "Content-Type": "application/json",
     "X-Goog-Api-Key": GOOGLE_KEY,
