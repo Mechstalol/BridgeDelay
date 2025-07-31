@@ -2,44 +2,49 @@ name: Build & deploy – bridge-delay-app
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch: {}
+    branches: [ main ]
+  workflow_dispatch:
 
-env:                                # ← one place to change names
-  REGISTRY: bridgealertacr.azurecr.io
-  REPOSITORY: bridge-delay-app
-  TAG: latest
-  IMAGE: ${{ env.REGISTRY }}/${{ env.REPOSITORY }}:${{ env.TAG }}
+# ── shared constants you still like ─────────────────────────
+env:
+  REGISTRY:    bridgealertacr.azurecr.io
+  REPOSITORY:  bridge-delay-app
+  TAG:         latest           # flip to '${{ github.sha }}' any time
+# ────────────────────────────────────────────────────────────
 
 jobs:
-# ───────────────────────────────────────────────
-# 1️⃣  BUILD & PUSH
-# ───────────────────────────────────────────────
+# ────────────────────────────────
+# 1️⃣  BUILD & PUSH IMAGE
+# ────────────────────────────────
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
+    # ← here it IS legal to reference workflow-level env vars
+    env:
+      IMAGE: ${{ env.REGISTRY }}/${{ env.REPOSITORY }}:${{ env.TAG }}
+
     steps:
     - uses: actions/checkout@v4
 
-    # login to ACR
-    - uses: docker/login-action@v3
+    - name: Log in to ACR
+      uses: docker/login-action@v3
       with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ secrets.REGISTRY_USERNAME }}   # admin-user or scoped token
-        password: ${{ secrets.REGISTRY_PASSWORD }}
+        registry:  ${{ env.REGISTRY }}
+        username:  ${{ secrets.REGISTRY_USERNAME }}
+        password:  ${{ secrets.REGISTRY_PASSWORD }}
 
-    # build and push
-    - uses: docker/build-push-action@v5
+    - name: Build & push image
+      uses: docker/build-push-action@v5
       with:
         context: .
-        push: true
-        tags: ${{ env.IMAGE }}
+        push:   true
+        tags:   ${{ env.IMAGE }}
 
-# ───────────────────────────────────────────────
-# 2️⃣  DEPLOY TO WEB APP
-# ───────────────────────────────────────────────
+# ────────────────────────────────
+# 2️⃣  DEPLOY TO AZURE WEB APP
+# ────────────────────────────────
   deploy:
     needs: build
     runs-on: ubuntu-latest
@@ -47,17 +52,20 @@ jobs:
       id-token: write
       contents: read
 
+    env:
+      IMAGE: ${{ env.REGISTRY }}/${{ env.REPOSITORY }}:${{ env.TAG }}
+
     steps:
-    # OIDC login – uses the Federated Credential you already created
-    - uses: azure/login@v2
+    - name: Azure login (OIDC)
+      uses: azure/login@v2
       with:
         client-id:       ${{ secrets.AZURE_CLIENT_ID }}
         tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-    # update linuxFxVersion → pulls latest image
-    - name: Deploy container
+    - name: Deploy container to Web App
       uses: azure/webapps-deploy@v3
       with:
         app-name: bridge-delay-app
-        images:   ${{ env.IMAGE }}
+        slot-name: Production
+        images: ${{ env.IMAGE }}
