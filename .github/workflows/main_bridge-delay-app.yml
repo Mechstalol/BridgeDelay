@@ -48,9 +48,10 @@ jobs:
     - name: Azure login (OIDC)
       uses: azure/login@v2
       with:
-        client-id:       ${{ secrets.AZURE_CLIENT_ID }}
-        tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        client-id:       ${{ secrets.AZUREAPPSERVICE_CLIENTID_993C9A456F1E4089B56B5CF329D0BF1D }}
+        tenant-id:       ${{ secrets.AZUREAPPSERVICE_TENANTID_290B337912884FBBBE4FE16062C5D5D8 }}
+        subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_8438F652E74442D8A0478EB2E5D6168E }}
+
 
     - name: Deploy container to Web App
       uses: azure/webapps-deploy@v3
