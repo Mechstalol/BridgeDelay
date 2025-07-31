@@ -42,7 +42,7 @@ jobs:
         context: .
         file: Dockerfile                  # change to Dockerfile if that’s the name
         push: true
-        tags: ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }}
+        tags: ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:latest
 
 # ────────────────────────────────────────────────────────────
 # 2️⃣  DEPLOY TO AZURE
@@ -68,4 +68,4 @@ jobs:
       with:
         app-name:  bridge-delay-app
         slot-name: Production
-        images:    ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }}
+        images:    ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:latest
