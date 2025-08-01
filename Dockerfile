@@ -41,10 +41,5 @@ RUN printf '%s\n' \
     > /tmp/where.py
 
 # keep everything above as-is …
-CMD gunicorn \
-     --bind 0.0.0.0:8000 \
-     --log-level debug \
-     --access-logfile - \
-     --error-logfile - \
-     --preload bridge_app:app
+CMD gunicorn --bind 0.0.0.0:${PORT:-8000} … bridge_app:app
 
