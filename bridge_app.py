@@ -1,17 +1,46 @@
+# -*- coding: utf-8 -*-
+"""
+BridgeDelay — unified Maps-API + SMS webhook
+-------------------------------------------
+One file does it all:
+
+* **Polling loop (5-min)** — calls Google Routes API, computes delay and pushes
+  thresholded SMS alerts to registered users.
+* **Flask app** (run under gunicorn) with:
+    • `/`  health probe 200 OK
+    • `/api/status` JSON snapshot of last poll
+    • `/api/signup` POST to register a phone (threshold/windows)
+    • `/sms` Inbound Twilio webhook supporting `STATUS`, `THRESHOLD`, `WINDOW`,
+      `HELP/LIST` commands.
+
+Legacy OCR code has been removed — all live data comes from Google Routes.
+"""
+
+from __future__ import annotations
+
 import os
 import time
 import json
+import re
 from datetime import datetime
-from typing import Dict, Any
-from flask import Flask, request, abort, jsonify
+from typing import Any, Dict, List
 
 import requests
+from flask import Flask, request, abort, jsonify, Response
 from twilio.rest import Client
+from twilio.twiml.messaging_response import MessagingResponse
 
-app = Flask(__name__)          # ← gunicorn expects this name
+# ──────────────────── Flask setup ──────────────────────────────────────────
+app = Flask(__name__)                     # gunicorn target →  bridge_app:app
 
-# routes api
-GOOGLE_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+# ──────────────────── Config — ENV vars ────────────────────────────────────
+GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
+ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
+AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
+FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
+TO_NUMBERS   = os.getenv("TWILIO_TO_NUMBERS", "")
+
+# Google Routes API endpoint + headers
 ROUTES_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
 HEADERS = {
     "Content-Type": "application/json",
@@ -19,25 +48,20 @@ HEADERS = {
     "X-Goog-FieldMask": "originIndex,destinationIndex,duration,staticDuration",
 }
 
-# coords
-        #  NB is northbound (to north van), SB is southbound (to downtown)
-NB_START = (49.283296, -123.119276)  # downtown starting from apple store
-NB_END   = (49.324653, -123.130173)  # north shore off‑ramp
-SB_START = (49.324432, -123.122765)  # north shore on‑ramp
-SB_END   = (49.292738, -123.133985)  # downtown off‑ramp
+# Lions Gate coords (lat, lng) — NB = downtown→North Shore; SB vice-versa
+NB_START = (49.283296, -123.119276)   # Apple Store
+NB_END   = (49.324653, -123.130173)   # North Shore off-ramp
+SB_START = (49.324432, -123.122765)   # North Shore on-ramp
+SB_END   = (49.292738, -123.133985)   # Downtown off-ramp
 
-# twilio vars
-ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-AUTH_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN")
-FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER")
-TO_NUMBERS  = os.getenv("TWILIO_TO_NUMBERS", "")
+# File persistence
+STATE_FILE        = "last_status.json"       # latest NB/SB snapshot
+USER_SETTINGS_FILE = "user_settings.json"    # thresholds & windows
 
-# persistence
-STATE_FILE = "last_status.json"
+# Emoji per severity bucket
+SEV_EMOJI = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
 
-# ---------------------------------------------------------------------------
-# Helper funcs
-# ---------------------------------------------------------------------------
+# ──────────────────── Helper functions ─────────────────────────────────────
 
 def _latlng(pair):
     lat, lng = pair
@@ -45,42 +69,39 @@ def _latlng(pair):
 
 
 def get_delays() -> Dict[str, Dict[str, int]]:
-    """Return live, base, delay minutes for NB & SB."""
+    """Return live, base and delay minutes for NB & SB."""
     body: Dict[str, Any] = {
         "origins": [
-            {"waypoint": {"location": _latlng(NB_START)}},  # origin0 = NB start
-            {"waypoint": {"location": _latlng(SB_START)}},  # origin1 = SB start
+            {"waypoint": {"location": _latlng(NB_START)}},
+            {"waypoint": {"location": _latlng(SB_START)}},
         ],
         "destinations": [
-            {"waypoint": {"location": _latlng(NB_END)}},    # dest0 = NB end
-            {"waypoint": {"location": _latlng(SB_END)}},    # dest1 = SB end
+            {"waypoint": {"location": _latlng(NB_END)}},
+            {"waypoint": {"location": _latlng(SB_END)}},
         ],
         "travelMode": "DRIVE",
         "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
     }
-
     r = requests.post(ROUTES_URL, headers=HEADERS, json=body, timeout=10)
     r.raise_for_status()
     matrix = r.json()  # order: (0,0) (0,1) (1,0) (1,1)
 
-    def to_min(d: str) -> float:
-        return float(d.rstrip("s")) / 60.0
+    def to_min(s: str) -> float:
+        return float(s.rstrip("s")) / 60.0
 
-    nb_elem = matrix[0]   # origin0 → dest0  (NB)
-    sb_elem = matrix[3]   # origin1 → dest1  (SB)
-
+    nb, sb = matrix[0], matrix[3]
     def build(elem):
         live  = to_min(elem["duration"])
         base  = to_min(elem["staticDuration"])
         delay = live - base
         return {"live": round(live), "base": round(base), "delay": round(delay)}
 
-    return {"NB": build(nb_elem), "SB": build(sb_elem)}
+    return {"NB": build(nb), "SB": build(sb)}
 
 
-# persistence helpers
+# ──────────────────── Persistence helpers ──────────────────────────────────
 
-def load_snapshot():
+def load_snapshot() -> Dict[str, Any]:
     try:
         with open(STATE_FILE, "r") as f:
             return json.load(f)
@@ -88,34 +109,29 @@ def load_snapshot():
         return {}
 
 
-def save_snapshot(snap):
+def save_snapshot(snap: Dict[str, Any]):
     with open(STATE_FILE, "w") as f:
         json.dump(snap, f)
 
 
-# twilio helpers
-
-def send_sms(body: str, to: str) -> str:
-    client = Client(ACCOUNT_SID, AUTH_TOKEN)
-    msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
-    return msg.sid
-
-
-# user settings
-
-def load_user_settings():
+def load_user_settings() -> List[Dict[str, Any]]:
     try:
-        with open("user_settings.json", "r") as f:
+        with open(USER_SETTINGS_FILE, "r") as f:
             return json.load(f)
     except FileNotFoundError:
         return []
+
+
+def save_user_settings(settings: List[Dict[str, Any]]):
+    with open(USER_SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=2)
 
 
 def get_user_settings():
     settings = load_user_settings()
     if settings:
         return settings
-    # fallback to env list
+    # Fallback to env numbers if no file yet
     users = []
     for num in TO_NUMBERS.split(","):
         num = num.strip()
@@ -127,8 +143,15 @@ def get_user_settings():
             })
     return users
 
+# ──────────────────── Twilio helpers ───────────────────────────────────────
 
-# --- business logic ---------------------------------------------------------
+def send_sms(body: str, to: str) -> str:
+    client = Client(ACCOUNT_SID, AUTH_TOKEN)
+    msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
+    return msg.sid
+
+
+# ──────────────────── Business logic ───────────────────────────────────────
 
 def severity_level(delay: int) -> int:
     if delay <= 5:
@@ -167,11 +190,9 @@ def check_and_notify():
         f"SB: {sb_s['live']}m (base {sb_s['base']} +{sb_s['delay']})"
     )
 
-    users = get_user_settings()
     now = datetime.now().strftime("%H:%M")
-    for u in users:
-        thr = u["threshold"]
-        if nb_s["delay"] < thr and sb_s["delay"] < thr:
+    for u in get_user_settings():
+        if (nb_s["delay"] < u["threshold"] and sb_s["delay"] < u["threshold"]):
             continue
         if not within_window(now, u["windows"]):
             continue
@@ -179,42 +200,38 @@ def check_and_notify():
         print(f"🔔 Sent to {u['phone']}: {sid}")
 
 
-# main loop (5 mins  intervals)
-if __name__ == "__main__":
-    required = (
-        "GOOGLE_MAPS_API_KEY",
-        "TWILIO_ACCOUNT_SID",
-        "TWILIO_AUTH_TOKEN",
-        "TWILIO_FROM_NUMBER",
-        "TWILIO_TO_NUMBERS",
-    )
-    missing = [v for v in required if not os.environ.get(v)]
-    if missing:
-        print("⚠️ Missing env vars:", ", ".join(missing))
-        exit(1)
+# ──────────────────── SMS Webhook helpers ──────────────────────────────────
 
-    print("▶️ Bridge monitor started – polling every 5 min …")
-    while True:
+def parse_windows(s: str):
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    if len(parts) > 2:
+        raise ValueError("Maximum two windows allowed")
+    windows = []
+    for part in parts:
         try:
-            check_and_notify()
-        except Exception as e:
-            print("❌ Error during check:", e)
-        time.sleep(300)   # ← 5 minutes
+            start, end = part.split("-", 1)
+            if not re.match(r"^\d{2}:\d{2}$", start) or not re.match(r"^\d{2}:\d{2}$", end):
+                raise ValueError
+            if start >= end:
+                raise ValueError
+        except ValueError:
+            raise ValueError(f"Invalid window: '{part}'")
+        windows.append({"start": start, "end": end})
+    return windows
 
-# health probe for Azure’s warm-up check
+# ──────────────────── Flask routes ─────────────────────────────────────────
+
 @app.route("/", methods=["GET"])
 def health():
     return "ok", 200
 
 
-# simple status endpoint you can call from your GitHub Pages JS
 @app.route("/api/status", methods=["GET"])
 def status():
-    snap = load_snapshot()        # helper you already wrote
+    snap = load_snapshot()
     return jsonify(snap if snap else {"msg": "no data yet"})
 
 
-# optional sign-up endpoint (POST JSON or form)
 @app.route("/api/signup", methods=["POST"])
 def signup():
     phone = (
@@ -223,24 +240,74 @@ def signup():
     if not phone:
         abort(400, "phone field is required")
 
-    users = load_user_settings()
+    users = get_user_settings()
     if any(u["phone"] == phone for u in users):
         return {"msg": "already registered"}, 200
 
     users.append({
         "phone": phone,
-        "threshold": 0,                         # customise if you wish
-        "windows": [{"start": "00:00","end": "23:59"}]
+        "threshold": 0,
+        "windows": [{"start": "00:00", "end": "23:59"}],
     })
-    with open("user_settings.json", "w") as f:
-        json.dump(users, f)
+    save_user_settings(users)
     return {"msg": "registered"}, 201
 
 
-# Twilio inbound SMS webhook (optional)
 @app.route("/sms", methods=["POST"])
 def sms_webhook():
     if not request.form.get("From"):
         abort(400)
-    # … your SMS-response logic …
-    return "<Response></Response>", 200
+
+    from_number = request.form["From"]
+    body_raw    = request.form.get("Body", "").strip()
+    parts       = body_raw.upper().split(maxsplit=1)
+
+    users = get_user_settings()
+    user  = next((u for u in users if u["phone"] == from_number), None)
+    if not user:
+        user = {"phone": from_number, "threshold": 0, "windows": [{"start": "00:00", "end": "23:59"}]}
+        users.append(user)
+
+    resp = MessagingResponse()
+
+    # --- STATUS ------------------------------------------------------------
+    if parts[0] == "STATUS":
+        try:
+            delays = get_delays()
+            nb, sb = delays["NB"], delays["SB"]
+            nb_sev, sb_sev = severity_level(nb["delay"]), severity_level(sb["delay"])
+            msg = (
+                f"{SEV_EMOJI[nb_sev]} NB {nb['delay']}m (base {nb['base']})\n"
+                f"{SEV_EMOJI[sb_sev]} SB {sb['delay']}m (base {sb['base']})"
+            )
+        except Exception:
+            msg = "⚠️ Couldn’t fetch delay right now."
+        resp.message(msg)
+        return Response(str(resp), mimetype="application/xml")
+
+    # --- THRESHOLD n --------------------------------------------------------
+    if parts[0] == "THRESHOLD" and len(parts) == 2 and parts[1].isdigit():
+        user["threshold"] = int(parts[1])
+        save_user_settings(users)
+        resp.message(f"✅ Threshold set to {parts[1]} minutes.")
+
+    # --- WINDOW HH:MM-HH:MM[,HH:MM-HH:MM] ----------------------------------
+    elif parts[0] == "WINDOW" and len(parts) == 2:
+        try:
+            user["windows"] = parse_windows(parts[1])
+            save_user_settings(users)
+            win_str = ", ".join(f"{w['start']}-{w['end']}" for w in user["windows"])
+            resp.message(f"✅ Windows set to {win_str}")
+        except ValueError:
+            resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]")
+
+    # --- HELP / LIST --------------------------------------------------------
+    elif parts[0] in ("LIST", "HELP"):
+        resp.message(
+            "Commands: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]"
+        )
+
+    else:
+        resp.message("Unknown command. Send HELP for options.")
+
+    return Response(str
