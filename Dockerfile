@@ -29,9 +29,6 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # ── 6️⃣ Copy source code ───────────────────────────────────────
 COPY . .
 
-# ── 7️⃣ Expose ports (8000 = web API expected by App Service, 2222 = SSH) ──
-EXPOSE 8000 2222
-
 # ── 8️⃣ Start Gunicorn directly (simpler to debug) ─────────────────────────
 EXPOSE 8000 2222
 
