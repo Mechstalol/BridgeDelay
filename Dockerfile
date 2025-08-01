@@ -44,9 +44,10 @@ RUN printf '%s\n' \
     > /tmp/where.py
 
 # keep everything above as-is …
-CMD ["bash","-c", "\
-      python -u main.py & \
-      /usr/sbin/sshd -D -p 2222 & \
-      exec gunicorn --bind 0.0.0.0:8000 bridge_app:app"]
-#                                   ───────────┴────
-#                                   file name : object
+CMD ["gunicorn",
+     "--bind", "0.0.0.0:8000",
+     "--log-level", "debug",           # verbose errors
+     "--access-logfile", "-",          # stdout
+     "--error-logfile", "-",           # stderr
+     "--preload",                      # import app at master start -> surfacing import errors
+     "bridge_app:app"]
