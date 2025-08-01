@@ -1,5 +1,5 @@
 {
-  "scriptFile": "main.py",
+  "scriptFile": "bridge_app.py",
   "bindings": [
     {
       "name": "timer",
