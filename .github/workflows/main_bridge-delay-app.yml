@@ -13,8 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      image: ${{ steps.build_push.outputs.image }}
 
     steps:
       - uses: actions/checkout@v4
@@ -27,15 +25,13 @@ jobs:
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
       - name: Build & push image
-        id: build_push
         run: |
           IMAGE="${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }}"
           docker build -t $IMAGE .
           docker push $IMAGE
-          # optional: also push a human‑friendly tag
+          # optional: also tag & push "latest" for dev convenience
           docker tag $IMAGE ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:latest
-          docker push     ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:latest
-          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          docker push    ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:latest
 
   # ────────────────────────────────
   # 2️⃣  DEPLOY TO AZURE WEB APP
@@ -60,7 +56,7 @@ jobs:
         with:
           app-name: bridge-delay-app
           slot-name: Production
-          images: ${{ needs.build.outputs.image }}
+          images: ${{ secrets.REGISTRY_LOGIN_SERVER }}/bridge-delay-app:${{ github.sha }}
 
       # Optional restart to guarantee the new tag is pulled
       - name: Restart Web App
