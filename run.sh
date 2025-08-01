@@ -9,5 +9,5 @@ source venv/bin/activate
 pip install --no-cache-dir -r requirements.txt
 
 # 3️⃣ Run the monitor
-python main.py
+python bridge_app.py
 
