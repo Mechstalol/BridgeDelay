@@ -44,10 +44,10 @@ RUN printf '%s\n' \
     > /tmp/where.py
 
 # keep everything above as-is …
-CMD ["gunicorn",
-     "--bind", "0.0.0.0:8000",
-     "--log-level", "debug",           # verbose errors
-     "--access-logfile", "-",          # stdout
-     "--error-logfile", "-",           # stderr
-     "--preload",                      # import app at master start -> surfacing import errors
-     "bridge_app:app"]
+CMD gunicorn \
+     --bind 0.0.0.0:8000 \
+     --log-level debug \
+     --access-logfile - \
+     --error-logfile - \
+     --preload bridge_app:app
+
