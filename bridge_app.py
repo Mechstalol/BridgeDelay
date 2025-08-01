@@ -310,4 +310,4 @@ def sms_webhook():
     else:
         resp.message("Unknown command. Send HELP for options.")
 
-    return Response(str
+    return Response(str)
