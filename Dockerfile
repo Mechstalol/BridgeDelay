@@ -35,7 +35,7 @@ EXPOSE 8000 2222
 # --- debug stub ---
 RUN printf '%s\n' \
     'import importlib, sys, os; ' \
-    'm = importlib.import_module("webhook"); ' \
+    'm = importlib.import_module("bridge_app"); ' \
     'print("[DEBUG] imported", m.__file__); ' \
     'sys.exit(0)' \
     > /tmp/where.py
