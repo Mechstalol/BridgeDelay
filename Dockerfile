@@ -37,4 +37,4 @@ RUN chmod +x /app/run.sh
 EXPOSE 8000 2222
 
 # ── 9️⃣ Start everything via run.sh (variable expands inside) ──
-CMD ["sh", "-c", "./r]()
+CMD ["sh", "-c", "./r]()]
