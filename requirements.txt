@@ -1,7 +1,5 @@
 azure-functions
 requests
-pillow
-pytesseract
 twilio
 Flask
 gunicorn>=21.2
