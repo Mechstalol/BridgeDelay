@@ -12,8 +12,6 @@ One file does it all:
     • `/api/signup` POST to register a phone (threshold/windows)
     • `/sms` Inbound Twilio webhook supporting `STATUS`, `THRESHOLD`, `WINDOW`,
       `HELP/LIST` commands.
-
-Legacy OCR code has been removed — all live data comes from Google Routes.
 """
 
 from __future__ import annotations
@@ -50,14 +48,18 @@ HEADERS = {
 }
 
 # Lions Gate coords (lat, lng) — NB = downtown→North Shore; SB vice-versa
-NB_START = (49.283296, -123.119276)   # Apple Store
-NB_END   = (49.324653, -123.130173)   # North Shore off-ramp
+NB_START = (49.283260, -123.119297)   # Apple Store
+NB_END   = (49.324345, -123.122962)   # North Shore off-ramp
 SB_START = (49.324432, -123.122765)   # North Shore on-ramp
 SB_END   = (49.292738, -123.133985)   # Downtown off-ramp
 
+# ── Hard-wired free-flow baselines (minutes) ───────────────────────────────
+NB_BASE_MIN = 7    # northbound
+SB_BASE_MIN = 5    # southbound
+
 # File persistence
-STATE_FILE        = "last_status.json"       # latest NB/SB snapshot
-USER_SETTINGS_FILE = "user_settings.json"    # thresholds & windows
+STATE_FILE         = "last_status.json"       # latest NB/SB snapshot
+USER_SETTINGS_FILE = "user_settings.json"     # thresholds & windows
 
 # Emoji per severity bucket
 SEV_EMOJI = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
@@ -91,13 +93,17 @@ def get_delays() -> Dict[str, Dict[str, int]]:
         return float(s.rstrip("s")) / 60.0
 
     nb, sb = matrix[0], matrix[3]
-    def build(elem):
-        live  = to_min(elem["duration"])
-        base  = to_min(elem["staticDuration"])
-        delay = live - base
-        return {"live": round(live), "base": round(base), "delay": round(delay)}
 
-    return {"NB": build(nb), "SB": build(sb)}
+    def build(elem, base_minutes: int):
+        live  = to_min(elem["duration"])     # live traffic
+        base  = base_minutes                 # fixed baseline
+        delay = live - base
+        return {"live": round(live), "base": base, "delay": round(delay)}
+
+    return {
+        "NB": build(nb, NB_BASE_MIN),
+        "SB": build(sb, SB_BASE_MIN),
+    }
 
 
 # ──────────────────── Persistence helpers ──────────────────────────────────
