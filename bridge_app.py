@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import time
 import json
+import argparse
 import re
 from datetime import datetime
 from typing import Any, Dict, List
@@ -310,4 +311,20 @@ def sms_webhook():
     else:
         resp.message("Unknown command. Send HELP for options.")
 
-    return Response(str)
+    return Response(str(resp), mimetype="application/xml")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="BridgeDelay monitor")
+    parser.add_argument(
+        "--poll", action="store_true", help="Run delay check loop every 5 minutes"
+    )
+    args = parser.parse_args()
+
+    if args.poll:
+        while True:
+            try:
+                check_and_notify()
+            except Exception as e:
+                print("Polling error:", e)
+            time.sleep(300)
