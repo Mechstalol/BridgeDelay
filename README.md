@@ -1,36 +1,50 @@
 # BridgeDelay
 
-A simple monitor that checks a live image for the current delay time and
-sends SMS alerts when the delay severity changes. It also exposes a Twilio
-SMS webhook so users can adjust their alert preferences or query the
-current status on demand.
+A simple monitor that polls Google Maps for Lions Gate Bridge travel times and
+sends SMS alerts when delay severity changes. It also exposes a Twilio SMS
+webhook so users can adjust alert preferences or query the current status on
+demand.
 
 ## Environment variables
 
-The application expects the following variables to be defined:
+Set the following variables before running the app:
 
-- `IMAGE_URL` – URL of the image containing the delay text.
+- `GOOGLE_MAPS_API_KEY` – Google Maps Routes API key used for delay lookups.
 - `TWILIO_ACCOUNT_SID` – Twilio account SID used to send SMS.
 - `TWILIO_AUTH_TOKEN` – Twilio auth token.
 - `TWILIO_FROM_NUMBER` – The Twilio phone number that sends the alerts.
+ codex/add-background-job-for-notifications
 - `TWILIO_TO_NUMBERS` – Comma-separated list of recipient numbers for the
   monitor when running without per-user settings.
 - `ENABLE_POLLING` – Set to `0` to disable the background polling thread
   (defaults to enabled).
 - `POLL_INTERVAL` – Interval in seconds between delay checks. Defaults to
   `300` seconds. Setting it to `0` also disables polling.
+ codex/add-background-job-for-notifications
+=======
+
+- `TWILIO_TO_NUMBERS` – Optional comma-separated list of recipient numbers for
+  the monitor when running without per-user settings.
+ main
+ main
 
 ## Running locally
 
-Install the requirements and run the monitor directly:
+Install requirements and then run the web server and poller. The poller checks
+Google Maps every five minutes and must run continuously alongside the web
+server.
 
 ```bash
 pip install -r requirements.txt
-python main.py
+
+# Terminal 1 – background poller
+python bridge_app.py --poll
+
+# Terminal 2 – Flask web server
+gunicorn --bind 0.0.0.0:8000 bridge_app:app
 ```
 
-Alternatively run the helper script which installs dependencies and then
-launches the monitor:
+Alternatively, run the helper script which starts both components for you:
 
 ```bash
 ./run.sh
@@ -44,21 +58,18 @@ Build the image:
 docker build -t bridgedelay .
 ```
 
-Run it with the required environment configured and expose port 80 for the
-webhook:
+Run it with the required environment configured. The container starts the
+poller and serves the webhook on port 8000 (mapped below to host port 80):
 
 ```bash
-docker run -p 80:80 \
-  -e IMAGE_URL=... \
+docker run -p 80:8000 \
+  -e GOOGLE_MAPS_API_KEY=... \
   -e TWILIO_ACCOUNT_SID=... \
   -e TWILIO_AUTH_TOKEN=... \
   -e TWILIO_FROM_NUMBER=... \
   -e TWILIO_TO_NUMBERS=... \
   bridgedelay
 ```
-
-This launches the delay monitor in the background and serves the Twilio
-webhook on port 80 using Gunicorn as specified in the Dockerfile.
 
 ## Usage examples
 
