@@ -21,6 +21,7 @@ import time
 import json
 import argparse
 import re
+import threading
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -38,6 +39,14 @@ ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
 FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
 TO_NUMBERS   = os.getenv("TWILIO_TO_NUMBERS", "")
+
+# Background polling configuration
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))  # seconds
+ENABLE_POLLING = os.getenv("ENABLE_POLLING", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+)
 
 # Google Routes API endpoint + headers
 ROUTES_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
@@ -205,6 +214,42 @@ def check_and_notify():
             continue
         sid = send_sms(body, u["phone"])
         print(f"🔔 Sent to {u['phone']}: {sid}")
+
+
+# ──────────────────── Background scheduler ────────────────────────────────
+_poll_lock = threading.Lock()
+_poll_started = False
+
+
+def start_background_polling():
+    """Launch a daemon thread that periodically runs ``check_and_notify``."""
+    global _poll_started
+    if _poll_started:
+        return
+    _poll_started = True
+    if not ENABLE_POLLING or POLL_INTERVAL <= 0:
+        print("Background polling disabled.")
+        return
+
+    def loop():
+        while True:
+            with _poll_lock:
+                try:
+                    check_and_notify()
+                except Exception as e:
+                    print("Polling error:", e)
+            time.sleep(POLL_INTERVAL)
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
+# Background thread is launched on the first incoming request
+
+
+@app.before_request
+def _start_polling() -> None:
+    """Ensure the background polling thread is running before each request."""
+    start_background_polling()
 
 
 # ──────────────────── SMS Webhook helpers ──────────────────────────────────

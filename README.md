@@ -15,6 +15,10 @@ The application expects the following variables to be defined:
 - `TWILIO_FROM_NUMBER` – The Twilio phone number that sends the alerts.
 - `TWILIO_TO_NUMBERS` – Comma-separated list of recipient numbers for the
   monitor when running without per-user settings.
+- `ENABLE_POLLING` – Set to `0` to disable the background polling thread
+  (defaults to enabled).
+- `POLL_INTERVAL` – Interval in seconds between delay checks. Defaults to
+  `300` seconds. Setting it to `0` also disables polling.
 
 ## Running locally
 
