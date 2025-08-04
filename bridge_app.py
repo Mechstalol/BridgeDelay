@@ -243,11 +243,16 @@ def start_background_polling():
     threading.Thread(target=loop, daemon=True).start()
 
 
-# Background thread is launched on the first incoming request
+# Background thread is launched on the first request in each worker.
+# ``before_first_request`` was removed in Flask 3, so ``before_request``
+# is used with an idempotent guard to ensure the thread starts only once.
+
 
 @app.before_request
 def _start_polling() -> None:
-    """Ensure the background polling thread is running before each request."""
+    start_background_polling()
+
+
 
 # ──────────────────── SMS Webhook helpers ──────────────────────────────────
 

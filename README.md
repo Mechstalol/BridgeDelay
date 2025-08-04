@@ -16,17 +16,11 @@ Set the following variables before running the app:
  codex/add-background-job-for-notifications
 - `TWILIO_TO_NUMBERS` – Comma-separated list of recipient numbers for the
   monitor when running without per-user settings.
-- `ENABLE_POLLING` – Set to `0` to disable the background polling thread
-  (defaults to enabled).
+- `ENABLE_POLLING` – Set to `0` to disable the background polling thread.
 - `POLL_INTERVAL` – Interval in seconds between delay checks. Defaults to
   `300` seconds. Setting it to `0` also disables polling.
- codex/add-background-job-for-notifications
-=======
+  The thread starts automatically on the first request.
 
-- `TWILIO_TO_NUMBERS` – Optional comma-separated list of recipient numbers for
-  the monitor when running without per-user settings.
- main
- main
 
 ## Running locally
 
