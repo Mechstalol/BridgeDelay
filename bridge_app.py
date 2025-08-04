@@ -245,12 +245,9 @@ def start_background_polling():
 
 # Background thread is launched on the first incoming request
 
-
-@app.before_first_request
+@app.before_request
 def _start_polling() -> None:
-    """Start the background polling thread on the first incoming request."""
-    start_background_polling()
-
+    """Ensure the background polling thread is running before each request."""
 
 # ──────────────────── SMS Webhook helpers ──────────────────────────────────
 
