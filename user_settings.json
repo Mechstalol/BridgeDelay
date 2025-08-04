@@ -15,7 +15,7 @@
   },
   {
     "phone": "+16729991314",
-    "threshold": 20,
+    "threshold": 5,
     "windows": [
       {
         "start": "00:00",
