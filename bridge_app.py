@@ -96,23 +96,31 @@ def get_delays() -> Dict[str, Dict[str, int]]:
     }
     r = requests.post(ROUTES_URL, headers=HEADERS, json=body, timeout=10)
     r.raise_for_status()
-    matrix = r.json()  # order: (0,0) (0,1) (1,0) (1,1)
+
+    # ``computeRouteMatrix`` returns newline-delimited JSON. Parse the stream and
+    # key results by their origin/destination indices to avoid relying on order.
+    lines = [json.loads(line) for line in r.text.strip().splitlines() if line]
+    lookup = {
+        (elem["originIndex"], elem["destinationIndex"]): elem for elem in lines
+    }
 
     def to_min(s: str) -> float:
         return float(s.rstrip("s")) / 60.0
 
-    nb, sb = matrix[0], matrix[3]
+    nb = lookup[(0, 0)]
+    sb = lookup[(1, 1)]
 
-    def build(elem, base_minutes: int):
-        live  = to_min(elem["duration"])     # live traffic
-        base  = base_minutes                 # fixed baseline
-        delay = live - base
-        return {"live": round(live), "base": base, "delay": round(delay)}
+    def build(elem, fallback_base: int):
+        live = to_min(elem["duration"])  # live traffic
+        base = to_min(elem.get("staticDuration", f"{fallback_base * 60}s"))
+        delay = max(0.0, live - base)
+        return {
+            "live": round(live),
+            "base": round(base),
+            "delay": round(delay),
+        }
 
-    return {
-        "NB": build(nb, NB_BASE_MIN),
-        "SB": build(sb, SB_BASE_MIN),
-    }
+    return {"NB": build(nb, NB_BASE_MIN), "SB": build(sb, SB_BASE_MIN)}
 
 
 # ──────────────────── Persistence helpers ──────────────────────────────────
