@@ -39,11 +39,15 @@ app = Flask(__name__)  # gunicorn target →  bridge_app:app
 
 CORS(
     app,
-    origins=[
-        "https://northvanupdates.com",
-        "https://www.northvanupdates.com"
-    ],
-    supports_credentials=False
+    resources={r"/api/*": {
+        "origins": [
+            "https://northvanupdates.com",
+            "https://www.northvanupdates.com"
+        ],
+        "allow_headers": ["Content-Type"],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "max_age": 600
+    }}
 )
 
 # ──────────────────── Config — ENV vars ────────────────────────────────────
