@@ -2,15 +2,13 @@
 """
 BridgeDelay — unified Maps-API + SMS webhook
 -------------------------------------------
-One file does it all:
-
 * Polling loop (5-min): calls Google Routes API, computes delay and pushes
   thresholded SMS alerts to registered users.
 * Flask app (run under gunicorn) with:
-    • `/`                 health probe 200 OK
-    • `/api/status`      JSON snapshot of last poll
-    • `/api/signup`      POST to register a phone (threshold/windows)
-    • `/sms`             Twilio webhook: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]
+    • /                 health probe 200 OK
+    • /api/status      JSON snapshot of last poll
+    • /api/signup      POST to register a phone (threshold/windows)
+    • /sms             Twilio webhook: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]
 """
 
 from __future__ import annotations
@@ -33,6 +31,9 @@ from twilio.twiml.messaging_response import MessagingResponse
 # ── Azure Tables (Managed Identity first, conn string fallback) ────────────
 from azure.identity import DefaultAzureCredential
 from azure.data.tables import TableServiceClient
+
+# Local timezone for window checks
+from zoneinfo import ZoneInfo
 
 # ──────────────────── Flask setup ──────────────────────────────────────────
 app = Flask(__name__)  # gunicorn target →  bridge_app:app
@@ -119,32 +120,37 @@ def _latlng(pair):
     return {"latLng": {"latitude": lat, "longitude": lng}}
 
 def get_delays() -> Dict[str, Dict[str, int]]:
-    """Return live, base and delay minutes for NB & SB."""
+    """Return live, base and delay minutes for NB & SB (index-safe)."""
     body: Dict[str, Any] = {
         "origins": [
-            {"waypoint": {"location": _latlng(NB_START)}},
-            {"waypoint": {"location": _latlng(SB_START)}},
+            {"waypoint": {"location": _latlng(NB_START)}},  # originIndex = 0
+            {"waypoint": {"location": _latlng(SB_START)}},  # originIndex = 1
         ],
         "destinations": [
-            {"waypoint": {"location": _latlng(NB_END)}},
-            {"waypoint": {"location": _latlng(SB_END)}},
+            {"waypoint": {"location": _latlng(NB_END)}},    # destinationIndex = 0
+            {"waypoint": {"location": _latlng(SB_END)}},    # destinationIndex = 1
         ],
         "travelMode": "DRIVE",
         "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
     }
     r = requests.post(ROUTES_URL, headers=HEADERS, json=body, timeout=10)
     r.raise_for_status()
-    matrix = r.json()  # order: (0,0) (0,1) (1,0) (1,1)
+    items = r.json()  # order not guaranteed
+
+    # Build lookup keyed by (originIndex, destinationIndex)
+    by_idx = {(it["originIndex"], it["destinationIndex"]): it for it in items}
+
+    # Our two routes are the diagonal of the matrix
+    nb = by_idx[(0, 0)]  # NB_START → NB_END
+    sb = by_idx[(1, 1)]  # SB_START → SB_END
 
     def to_min(s: str) -> float:
         return float(s.rstrip("s")) / 60.0
 
-    nb, sb = matrix[0], matrix[3]
-
     def build(elem, base_minutes: int):
         live  = to_min(elem["duration"])
         base  = base_minutes
-        delay = live - base
+        delay = max(0, live - base)  # avoid negative due to rounding
         return {"live": round(live), "base": base, "delay": round(delay)}
 
     return {"NB": build(nb, NB_BASE_MIN), "SB": build(sb, SB_BASE_MIN)}
@@ -307,7 +313,9 @@ def check_and_notify():
         f"SB: {sb_s['live']}m (base {sb_s['base']} +{sb_s['delay']})"
     )
 
-    now = datetime.now().strftime("%H:%M")
+    # Use Vancouver local time for windows
+    now = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
+
     for u in get_user_settings():
         if not u.get("active", True):
             continue
@@ -323,7 +331,7 @@ _poll_lock = threading.Lock()
 _poll_started = False
 
 def start_background_polling():
-    """Launch a daemon thread that periodically runs ``check_and_notify``."""
+    """Launch a daemon thread that periodically runs check_and_notify."""
     global _poll_started
     if _poll_started:
         return
