@@ -76,7 +76,7 @@ GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
 ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
 FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
-TO_NUMBERS   = os.getenv("TWILIO_TO_NUMBERS", "")
+TO_NUMBERS   = os.getenv("TO_NUMBERS", "")  # optional: one-time seed only
 
 # Managed Identity endpoint for Tables (preferred), with local-dev fallback
 TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")  # e.g. https://<acct>.table.core.windows.net
@@ -202,6 +202,7 @@ def load_user_settings() -> List[Dict[str, Any]]:
             users.append(
                 {
                     "phone": ent["RowKey"],
+                    "active": bool(ent.get("active", True)),
                     "threshold": int(ent.get("threshold", 0)),
                     "windows": json.loads(ent.get("windows", "[]")),
                 }
@@ -220,8 +221,9 @@ def save_user_settings(settings: List[Dict[str, Any]]):
             ent = {
                 "PartitionKey": "user",
                 "RowKey": u["phone"],
-                "threshold": u["threshold"],
-                "windows": json.dumps(u["windows"]),
+                "active": u.get("active", True),
+                "threshold": u.get("threshold", 0),
+                "windows": json.dumps(u.get("windows", [])),
             }
             tc.upsert_entity(ent)
         return
@@ -229,19 +231,39 @@ def save_user_settings(settings: List[Dict[str, Any]]):
         json.dump(settings, f, indent=2)
 
 def get_user_settings():
-    settings = load_user_settings()
-    if settings:
-        return settings
-    users = []
-    for num in TO_NUMBERS.split(","):
-        num = num.strip()
-        if num:
-            users.append({
-                "phone": num,
-                "threshold": 0,
-                "windows": [{"start": "00:00", "end": "23:59"}],
-            })
-    return users
+    # Table is the source of truth — no env fallback at runtime.
+    return load_user_settings()
+
+# One-time bootstrap: seed TO_NUMBERS into table if table is empty
+_bootstrap_done = False
+def bootstrap_env_numbers_once():
+    global _bootstrap_done
+    if _bootstrap_done:
+        return
+    _bootstrap_done = True
+
+    tc = _get_table_client(USER_TABLE)
+    if not tc:
+        return  # running with file fallback; nothing to seed
+
+    has_rows = False
+    for _ in tc.query_entities("PartitionKey eq 'user'"):
+        has_rows = True
+        break
+    if has_rows:
+        return
+
+    nums = [n.strip() for n in TO_NUMBERS.split(",") if n.strip()]
+    for num in nums:
+        tc.upsert_entity({
+            "PartitionKey": "user",
+            "RowKey": num,
+            "active": True,
+            "threshold": 0,
+            "windows": json.dumps([{"start": "00:00", "end": "23:59"}]),
+        })
+    if nums:
+        print(f"Seeded {len(nums)} numbers from TO_NUMBERS into {USER_TABLE}.")
 
 # ──────────────────── Twilio helpers ───────────────────────────────────────
 def send_sms(body: str, to: str) -> str:
@@ -287,6 +309,8 @@ def check_and_notify():
 
     now = datetime.now().strftime("%H:%M")
     for u in get_user_settings():
+        if not u.get("active", True):
+            continue
         if (nb_s["delay"] < u["threshold"] and sb_s["delay"] < u["threshold"]):
             continue
         if not within_window(now, u["windows"]):
@@ -304,6 +328,10 @@ def start_background_polling():
     if _poll_started:
         return
     _poll_started = True
+
+    # Seed env numbers once into the table if it's empty.
+    bootstrap_env_numbers_once()
+
     if not ENABLE_POLLING or POLL_INTERVAL <= 0:
         print("Background polling disabled.")
         return
@@ -365,6 +393,7 @@ def signup():
 
     users.append({
         "phone": phone,
+        "active": True,
         "threshold": 0,
         "windows": [{"start": "00:00", "end": "23:59"}],
     })
@@ -383,7 +412,12 @@ def sms_webhook():
     users = get_user_settings()
     user  = next((u for u in users if u["phone"] == from_number), None)
     if not user:
-        user = {"phone": from_number, "threshold": 0, "windows": [{"start": "00:00", "end": "23:59"}]}
+        user = {
+            "phone": from_number,
+            "active": True,
+            "threshold": 0,
+            "windows": [{"start": "00:00", "end": "23:59"}]
+        }
         users.append(user)
 
     resp = MessagingResponse()
