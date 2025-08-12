@@ -29,6 +29,7 @@ import requests
 from flask import Flask, request, abort, jsonify, Response
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
+from azure.data.tables import TableServiceClient
 
 # ──────────────────── Flask setup ──────────────────────────────────────────
 app = Flask(__name__)                     # gunicorn target →  bridge_app:app
@@ -39,6 +40,7 @@ ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
 FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
 TO_NUMBERS   = os.getenv("TWILIO_TO_NUMBERS", "")
+AZURE_CONN   = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 
 # Background polling configuration
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))  # seconds
@@ -67,8 +69,10 @@ NB_BASE_MIN = 7    # northbound
 SB_BASE_MIN = 5    # southbound
 
 # File persistence
-STATE_FILE         = "last_status.json"       # latest NB/SB snapshot
-USER_SETTINGS_FILE = "user_settings.json"     # thresholds & windows
+STATE_FILE         = "last_status.json"       # latest NB/SB snapshot (fallback)
+USER_SETTINGS_FILE = "user_settings.json"     # thresholds & windows (fallback)
+STATE_TABLE        = "lastStatus"
+USER_TABLE         = "userSettings"
 
 # Emoji per severity bucket
 SEV_EMOJI = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
@@ -117,7 +121,25 @@ def get_delays() -> Dict[str, Dict[str, int]]:
 
 # ──────────────────── Persistence helpers ──────────────────────────────────
 
+def _get_table_client(name: str):
+    if not AZURE_CONN:
+        return None
+    svc = TableServiceClient.from_connection_string(AZURE_CONN)
+    try:
+        svc.create_table_if_not_exists(name)
+    except Exception:
+        pass
+    return svc.get_table_client(name)
+
+
 def load_snapshot() -> Dict[str, Any]:
+    tc = _get_table_client(STATE_TABLE)
+    if tc:
+        try:
+            ent = tc.get_entity(partition_key="state", row_key="latest")
+            return json.loads(ent["data"])
+        except Exception:
+            return {}
     try:
         with open(STATE_FILE, "r") as f:
             return json.load(f)
@@ -126,11 +148,32 @@ def load_snapshot() -> Dict[str, Any]:
 
 
 def save_snapshot(snap: Dict[str, Any]):
+    tc = _get_table_client(STATE_TABLE)
+    if tc:
+        entity = {
+            "PartitionKey": "state",
+            "RowKey": "latest",
+            "data": json.dumps(snap),
+        }
+        tc.upsert_entity(entity)
+        return
     with open(STATE_FILE, "w") as f:
         json.dump(snap, f)
 
 
 def load_user_settings() -> List[Dict[str, Any]]:
+    tc = _get_table_client(USER_TABLE)
+    if tc:
+        users: List[Dict[str, Any]] = []
+        for ent in tc.list_entities():
+            users.append(
+                {
+                    "phone": ent["RowKey"],
+                    "threshold": int(ent.get("threshold", 0)),
+                    "windows": json.loads(ent.get("windows", "[]")),
+                }
+            )
+        return users
     try:
         with open(USER_SETTINGS_FILE, "r") as f:
             return json.load(f)
@@ -139,6 +182,17 @@ def load_user_settings() -> List[Dict[str, Any]]:
 
 
 def save_user_settings(settings: List[Dict[str, Any]]):
+    tc = _get_table_client(USER_TABLE)
+    if tc:
+        for u in settings:
+            ent = {
+                "PartitionKey": "user",
+                "RowKey": u["phone"],
+                "threshold": u["threshold"],
+                "windows": json.dumps(u["windows"]),
+            }
+            tc.upsert_entity(ent)
+        return
     with open(USER_SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=2)
 
