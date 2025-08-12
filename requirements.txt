@@ -1,8 +1,8 @@
-azure-functions
-requests
-twilio
-Flask
+flask>=3.0
 gunicorn>=21.2
+requests>=2.31
+twilio>=9.0
 flask-cors>=4.0
-azure-data-tables>=12.5
 
+azure-data-tables>=12.5
+azure-identity>=1.17
