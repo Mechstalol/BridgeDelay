@@ -120,7 +120,7 @@ def _latlng(pair):
     return {"latLng": {"latitude": lat, "longitude": lng}}
 
 def get_delays() -> Dict[str, Dict[str, int]]:
-    """Return live, base and delay minutes for NB & SB (index-safe)."""
+    """Return live, base (free-flow) and delay minutes for NB & SB."""
     body: Dict[str, Any] = {
         "origins": [
             {"waypoint": {"location": _latlng(NB_START)}},  # originIndex = 0
@@ -137,23 +137,32 @@ def get_delays() -> Dict[str, Dict[str, int]]:
     r.raise_for_status()
     items = r.json()  # order not guaranteed
 
-    # Build lookup keyed by (originIndex, destinationIndex)
+    # Map by (originIndex, destinationIndex)
     by_idx = {(it["originIndex"], it["destinationIndex"]): it for it in items}
 
-    # Our two routes are the diagonal of the matrix
-    nb = by_idx[(0, 0)]  # NB_START → NB_END
-    sb = by_idx[(1, 1)]  # SB_START → SB_END
+    nb = by_idx[(0, 0)]
+    sb = by_idx[(1, 1)]
 
-    def to_min(s: str) -> float:
-        return float(s.rstrip("s")) / 60.0
+    def to_min(seconds_str: str) -> float:
+        # API returns like "534s" or "534.2s"
+        return float(seconds_str.rstrip("s")) / 60.0
 
-    def build(elem, base_minutes: int):
-        live  = to_min(elem["duration"])
-        base  = base_minutes
-        delay = max(0, live - base)  # avoid negative due to rounding
-        return {"live": round(live), "base": base, "delay": round(delay)}
+    def build(elem, fallback_base_min: int):
+        live_min = to_min(elem["duration"])
+        base_min = to_min(elem["staticDuration"]) if "staticDuration" in elem else float(fallback_base_min)
+        delay_min = max(0.0, live_min - base_min)  # avoid negative delay
 
-    return {"NB": build(nb, NB_BASE_MIN), "SB": build(sb, SB_BASE_MIN)}
+        return {
+            "live": round(live_min),
+            "base": round(base_min),
+            "delay": round(delay_min),
+        }
+
+    return {
+        "NB": build(nb, NB_BASE_MIN),
+        "SB": build(sb, SB_BASE_MIN),
+    }
+
 
 # ──────────────────── Persistence helpers (Tables + fallback) ─────────────
 def _get_table_client(name: str):
