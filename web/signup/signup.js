@@ -1,10 +1,9 @@
-const API_BASE = "https://bridge-delay-app-d4cfc5ercda0gqbk.westus2-01.azurewebsites.net"; // <-- put your app host
+const API_BASE = "https://bridge-delay-app-d4cfc5ercda0gqbk.westus2-01.azurewebsites.net"; 
+console.log("signup.js loaded", API_BASE);
 
-// very light normalization: strip spaces/dashes/().
-// NOTE: Expect E.164 like +16045550123. If user omits '+', consider adding +1 for Canada.
 function normalizePhone(raw) {
   const cleaned = raw.trim().replace(/[^\d+]/g, "");
-  return cleaned.startsWith("+") ? cleaned : cleaned; // don't auto-add country by default
+  return cleaned.startsWith("+") ? cleaned : cleaned;
 }
 
 const form  = document.getElementById("signup-form");
@@ -47,3 +46,4 @@ form.addEventListener("submit", async (e) => {
     btn.disabled = false;
   }
 });
+
