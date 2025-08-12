@@ -80,8 +80,8 @@ SB_START = (49.324432, -123.122765)
 SB_END   = (49.292738, -123.133985)
 
 # Baselines (minutes)
-NB_BASE_MIN = 7
-SB_BASE_MIN = 5
+NB_BASE_MIN = 9
+SB_BASE_MIN = 4
 
 # Persistence targets
 STATE_FILE         = "last_status.json"    # fallback
