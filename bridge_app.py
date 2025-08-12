@@ -26,7 +26,7 @@ from typing import Any, Dict, List
 
 import requests
 from flask import Flask, request, abort, jsonify, Response
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 
