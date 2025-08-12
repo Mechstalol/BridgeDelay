@@ -26,6 +26,7 @@ from typing import Any, Dict, List
 
 import requests
 from flask import Flask, request, abort, jsonify, Response
+from flask_cors import CORS
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 
@@ -35,6 +36,15 @@ from azure.data.tables import TableServiceClient
 
 # ──────────────────── Flask setup ──────────────────────────────────────────
 app = Flask(__name__)  # gunicorn target →  bridge_app:app
+
+CORS(
+    app,
+    origins=[
+        "https://northvanupdates.com",
+        "https://www.northvanupdates.com"
+    ],
+    supports_credentials=False
+)
 
 # ──────────────────── Config — ENV vars ────────────────────────────────────
 GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
