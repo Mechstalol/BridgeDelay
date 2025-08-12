@@ -26,7 +26,7 @@ from typing import Any, Dict, List
 
 import requests
 from flask import Flask, request, abort, jsonify, Response
-from flask_cors import CORS, cross_origin
+from flask_cors import CORS  # no per-route decorator needed with after_request
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 
@@ -37,18 +37,39 @@ from azure.data.tables import TableServiceClient
 # ──────────────────── Flask setup ──────────────────────────────────────────
 app = Flask(__name__)  # gunicorn target →  bridge_app:app
 
+# Allow our site origins (CORS is origin-only; paths like /signup don't matter)
+ALLOWED_ORIGINS = {
+    "https://northvanupdates.com",
+    "https://www.northvanupdates.com",
+}
+
+# Enable CORS globally for /api/* (Flask-CORS), and also add a safety net below.
 CORS(
     app,
     resources={r"/api/*": {
-        "origins": [
-            "https://northvanupdates.com",
-            "https://www.northvanupdates.com"
-        ],
+        "origins": list(ALLOWED_ORIGINS),
         "allow_headers": ["Content-Type"],
         "methods": ["GET", "POST", "OPTIONS"],
         "max_age": 600
     }}
 )
+
+# Safety net: ensure every /api/* response (including OPTIONS) has CORS headers
+@app.after_request
+def add_cors_headers(resp):
+    if request.path.startswith("/api/"):
+        origin = request.headers.get("Origin", "")
+        if origin in ALLOWED_ORIGINS:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return resp
+
+# Catch-all preflight for any /api/* path
+@app.route("/api/<path:_any>", methods=["OPTIONS"])
+def any_api_options(_any):
+    return ("", 204)
 
 # ──────────────────── Config — ENV vars ────────────────────────────────────
 GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
@@ -137,11 +158,9 @@ def _get_table_client(name: str):
     """
     svc = None
     if TABLES_ENDPOINT:
-        # Azure (recommended): no secrets; relies on Web App's Managed Identity + RBAC
         cred = DefaultAzureCredential()
         svc = TableServiceClient(endpoint=TABLES_ENDPOINT, credential=cred)
     elif AZURE_CONN:
-        # Local development: connection string from env
         svc = TableServiceClient.from_connection_string(AZURE_CONN)
     else:
         return None
@@ -160,7 +179,6 @@ def load_snapshot() -> Dict[str, Any]:
             return json.loads(ent["data"])
         except Exception:
             return {}
-    # file fallback
     try:
         with open(STATE_FILE, "r") as f:
             return json.load(f)
@@ -173,7 +191,6 @@ def save_snapshot(snap: Dict[str, Any]):
         ent = {"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(snap)}
         tc.upsert_entity(ent)
         return
-    # file fallback
     with open(STATE_FILE, "w") as f:
         json.dump(snap, f)
 
@@ -181,7 +198,6 @@ def load_user_settings() -> List[Dict[str, Any]]:
     tc = _get_table_client(USER_TABLE)
     if tc:
         users: List[Dict[str, Any]] = []
-        # Filter by PartitionKey to avoid scanning everything
         for ent in tc.query_entities("PartitionKey eq 'user'"):
             users.append(
                 {
@@ -191,7 +207,6 @@ def load_user_settings() -> List[Dict[str, Any]]:
                 }
             )
         return users
-    # file fallback
     try:
         with open(USER_SETTINGS_FILE, "r") as f:
             return json.load(f)
@@ -210,7 +225,6 @@ def save_user_settings(settings: List[Dict[str, Any]]):
             }
             tc.upsert_entity(ent)
         return
-    # file fallback
     with open(USER_SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=2)
 
@@ -218,18 +232,15 @@ def get_user_settings():
     settings = load_user_settings()
     if settings:
         return settings
-    # Fallback to env numbers if no data yet
     users = []
     for num in TO_NUMBERS.split(","):
         num = num.strip()
         if num:
-            users.append(
-                {
-                    "phone": num,
-                    "threshold": 0,
-                    "windows": [{"start": "00:00", "end": "23:59"}],
-                }
-            )
+            users.append({
+                "phone": num,
+                "threshold": 0,
+                "windows": [{"start": "00:00", "end": "23:59"}],
+            })
     return users
 
 # ──────────────────── Twilio helpers ───────────────────────────────────────
@@ -341,21 +352,9 @@ def status():
     snap = load_snapshot()
     return jsonify(snap if snap else {"msg": "no data yet"})
 
-@app.route("/api/signup", methods=["POST", "OPTIONS"])
-@cross_origin(
-    origins=[
-        "https://northvanupdates.com",
-        "https://www.northvanupdates.com"
-    ],
-    methods=["POST","OPTIONS"],
-    allow_headers=["Content-Type"],
-    max_age=600
-)
+@app.route("/api/signup", methods=["POST"])
 def signup():
-    if request.method == "OPTIONS":
-        # Preflight – Flask-CORS adds the headers
-        return ("", 204)
-
+    # (OPTIONS preflight is handled by any_api_options + after_request)
     phone = (request.json.get("phone") if request.is_json else request.form.get("phone"))
     if not phone:
         abort(400, "phone field is required")
@@ -371,7 +370,6 @@ def signup():
     })
     save_user_settings(users)
     return {"msg": "registered"}, 201
-
 
 @app.route("/sms", methods=["POST"])
 def sms_webhook():
