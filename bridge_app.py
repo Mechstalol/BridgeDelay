@@ -4,14 +4,13 @@ BridgeDelay — unified Maps-API + SMS webhook
 -------------------------------------------
 One file does it all:
 
-* **Polling loop (5-min)** — calls Google Routes API, computes delay and pushes
+* Polling loop (5-min): calls Google Routes API, computes delay and pushes
   thresholded SMS alerts to registered users.
-* **Flask app** (run under gunicorn) with:
-    • `/`  health probe 200 OK
-    • `/api/status` JSON snapshot of last poll
-    • `/api/signup` POST to register a phone (threshold/windows)
-    • `/sms` Inbound Twilio webhook supporting `STATUS`, `THRESHOLD`, `WINDOW`,
-      `HELP/LIST` commands.
+* Flask app (run under gunicorn) with:
+    • `/`                 health probe 200 OK
+    • `/api/status`      JSON snapshot of last poll
+    • `/api/signup`      POST to register a phone (threshold/windows)
+    • `/sms`             Twilio webhook: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]
 """
 
 from __future__ import annotations
@@ -29,10 +28,13 @@ import requests
 from flask import Flask, request, abort, jsonify, Response
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
+
+# ── Azure Tables (Managed Identity first, conn string fallback) ────────────
+from azure.identity import DefaultAzureCredential
 from azure.data.tables import TableServiceClient
 
 # ──────────────────── Flask setup ──────────────────────────────────────────
-app = Flask(__name__)                     # gunicorn target →  bridge_app:app
+app = Flask(__name__)  # gunicorn target →  bridge_app:app
 
 # ──────────────────── Config — ENV vars ────────────────────────────────────
 GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
@@ -40,15 +42,14 @@ ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
 FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
 TO_NUMBERS   = os.getenv("TWILIO_TO_NUMBERS", "")
-AZURE_CONN   = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+
+# Managed Identity endpoint for Tables (preferred), with local-dev fallback
+TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")  # e.g. https://<acct>.table.core.windows.net
+AZURE_CONN      = os.getenv("AZURE_STORAGE_CONNECTION_STRING")  # optional for local dev
 
 # Background polling configuration
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))  # seconds
-ENABLE_POLLING = os.getenv("ENABLE_POLLING", "1").lower() not in (
-    "0",
-    "false",
-    "no",
-)
+ENABLE_POLLING = os.getenv("ENABLE_POLLING", "1").lower() not in ("0", "false", "no")
 
 # Google Routes API endpoint + headers
 ROUTES_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
@@ -58,31 +59,29 @@ HEADERS = {
     "X-Goog-FieldMask": "originIndex,destinationIndex,duration,staticDuration",
 }
 
-# Lions Gate coords (lat, lng) — NB = downtown→North Shore; SB vice-versa
-NB_START = (49.283260, -123.119297)   # Apple Store
-NB_END   = (49.324345, -123.122962)   # North Shore off-ramp
-SB_START = (49.324432, -123.122765)   # North Shore on-ramp
-SB_END   = (49.292738, -123.133985)   # Downtown off-ramp
+# Lions Gate coords (lat, lng)
+NB_START = (49.283260, -123.119297)
+NB_END   = (49.324345, -123.122962)
+SB_START = (49.324432, -123.122765)
+SB_END   = (49.292738, -123.133985)
 
-# ── Hard-wired free-flow baselines (minutes) ───────────────────────────────
-NB_BASE_MIN = 7    # northbound
-SB_BASE_MIN = 5    # southbound
+# Baselines (minutes)
+NB_BASE_MIN = 7
+SB_BASE_MIN = 5
 
-# File persistence
-STATE_FILE         = "last_status.json"       # latest NB/SB snapshot (fallback)
-USER_SETTINGS_FILE = "user_settings.json"     # thresholds & windows (fallback)
+# Persistence targets
+STATE_FILE         = "last_status.json"    # fallback
+USER_SETTINGS_FILE = "user_settings.json"  # fallback
 STATE_TABLE        = "lastStatus"
 USER_TABLE         = "userSettings"
 
-# Emoji per severity bucket
+# Emoji per severity
 SEV_EMOJI = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
 
 # ──────────────────── Helper functions ─────────────────────────────────────
-
 def _latlng(pair):
     lat, lng = pair
     return {"latLng": {"latitude": lat, "longitude": lng}}
-
 
 def get_delays() -> Dict[str, Dict[str, int]]:
     """Return live, base and delay minutes for NB & SB."""
@@ -108,29 +107,36 @@ def get_delays() -> Dict[str, Dict[str, int]]:
     nb, sb = matrix[0], matrix[3]
 
     def build(elem, base_minutes: int):
-        live  = to_min(elem["duration"])     # live traffic
-        base  = base_minutes                 # fixed baseline
+        live  = to_min(elem["duration"])
+        base  = base_minutes
         delay = live - base
         return {"live": round(live), "base": base, "delay": round(delay)}
 
-    return {
-        "NB": build(nb, NB_BASE_MIN),
-        "SB": build(sb, SB_BASE_MIN),
-    }
+    return {"NB": build(nb, NB_BASE_MIN), "SB": build(sb, SB_BASE_MIN)}
 
-
-# ──────────────────── Persistence helpers ──────────────────────────────────
-
+# ──────────────────── Persistence helpers (Tables + fallback) ─────────────
 def _get_table_client(name: str):
-    if not AZURE_CONN:
+    """
+    Prefer Managed Identity using TABLES_ENDPOINT.
+    Fallback to connection string if provided (e.g., local dev).
+    Return None to trigger JSON file fallback when nothing is configured.
+    """
+    svc = None
+    if TABLES_ENDPOINT:
+        # Azure (recommended): no secrets; relies on Web App's Managed Identity + RBAC
+        cred = DefaultAzureCredential()
+        svc = TableServiceClient(endpoint=TABLES_ENDPOINT, credential=cred)
+    elif AZURE_CONN:
+        # Local development: connection string from env
+        svc = TableServiceClient.from_connection_string(AZURE_CONN)
+    else:
         return None
-    svc = TableServiceClient.from_connection_string(AZURE_CONN)
+
     try:
         svc.create_table_if_not_exists(name)
     except Exception:
         pass
     return svc.get_table_client(name)
-
 
 def load_snapshot() -> Dict[str, Any]:
     tc = _get_table_client(STATE_TABLE)
@@ -140,32 +146,29 @@ def load_snapshot() -> Dict[str, Any]:
             return json.loads(ent["data"])
         except Exception:
             return {}
+    # file fallback
     try:
         with open(STATE_FILE, "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
-
 def save_snapshot(snap: Dict[str, Any]):
     tc = _get_table_client(STATE_TABLE)
     if tc:
-        entity = {
-            "PartitionKey": "state",
-            "RowKey": "latest",
-            "data": json.dumps(snap),
-        }
-        tc.upsert_entity(entity)
+        ent = {"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(snap)}
+        tc.upsert_entity(ent)
         return
+    # file fallback
     with open(STATE_FILE, "w") as f:
         json.dump(snap, f)
-
 
 def load_user_settings() -> List[Dict[str, Any]]:
     tc = _get_table_client(USER_TABLE)
     if tc:
         users: List[Dict[str, Any]] = []
-        for ent in tc.list_entities():
+        # Filter by PartitionKey to avoid scanning everything
+        for ent in tc.query_entities("PartitionKey eq 'user'"):
             users.append(
                 {
                     "phone": ent["RowKey"],
@@ -174,12 +177,12 @@ def load_user_settings() -> List[Dict[str, Any]]:
                 }
             )
         return users
+    # file fallback
     try:
         with open(USER_SETTINGS_FILE, "r") as f:
             return json.load(f)
     except FileNotFoundError:
         return []
-
 
 def save_user_settings(settings: List[Dict[str, Any]]):
     tc = _get_table_client(USER_TABLE)
@@ -193,36 +196,35 @@ def save_user_settings(settings: List[Dict[str, Any]]):
             }
             tc.upsert_entity(ent)
         return
+    # file fallback
     with open(USER_SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=2)
-
 
 def get_user_settings():
     settings = load_user_settings()
     if settings:
         return settings
-    # Fallback to env numbers if no file yet
+    # Fallback to env numbers if no data yet
     users = []
     for num in TO_NUMBERS.split(","):
         num = num.strip()
         if num:
-            users.append({
-                "phone": num,
-                "threshold": 0,
-                "windows": [{"start": "00:00", "end": "23:59"}],
-            })
+            users.append(
+                {
+                    "phone": num,
+                    "threshold": 0,
+                    "windows": [{"start": "00:00", "end": "23:59"}],
+                }
+            )
     return users
 
 # ──────────────────── Twilio helpers ───────────────────────────────────────
-
 def send_sms(body: str, to: str) -> str:
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
     msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
     return msg.sid
 
-
 # ──────────────────── Business logic ───────────────────────────────────────
-
 def severity_level(delay: int) -> int:
     if delay <= 5:
         return 0
@@ -233,10 +235,8 @@ def severity_level(delay: int) -> int:
     else:
         return 3
 
-
 def within_window(now: str, windows):
     return any(w["start"] <= now <= w["end"] for w in windows)
-
 
 def check_and_notify():
     current = get_delays()
@@ -269,11 +269,9 @@ def check_and_notify():
         sid = send_sms(body, u["phone"])
         print(f"🔔 Sent to {u['phone']}: {sid}")
 
-
 # ──────────────────── Background scheduler ────────────────────────────────
 _poll_lock = threading.Lock()
 _poll_started = False
-
 
 def start_background_polling():
     """Launch a daemon thread that periodically runs ``check_and_notify``."""
@@ -296,20 +294,12 @@ def start_background_polling():
 
     threading.Thread(target=loop, daemon=True).start()
 
-
-# Background thread is launched on the first request in each worker.
-# ``before_first_request`` was removed in Flask 3, so ``before_request``
-# is used with an idempotent guard to ensure the thread starts only once.
-
-
+# Flask 3: start background thread on first request
 @app.before_request
 def _start_polling() -> None:
     start_background_polling()
 
-
-
 # ──────────────────── SMS Webhook helpers ──────────────────────────────────
-
 def parse_windows(s: str):
     parts = [p.strip() for p in s.split(",") if p.strip()]
     if len(parts) > 2:
@@ -328,23 +318,18 @@ def parse_windows(s: str):
     return windows
 
 # ──────────────────── Flask routes ─────────────────────────────────────────
-
 @app.route("/", methods=["GET"])
 def health():
     return "ok", 200
-
 
 @app.route("/api/status", methods=["GET"])
 def status():
     snap = load_snapshot()
     return jsonify(snap if snap else {"msg": "no data yet"})
 
-
 @app.route("/api/signup", methods=["POST"])
 def signup():
-    phone = (
-        request.json.get("phone") if request.is_json else request.form.get("phone")
-    )
+    phone = (request.json.get("phone") if request.is_json else request.form.get("phone"))
     if not phone:
         abort(400, "phone field is required")
 
@@ -359,7 +344,6 @@ def signup():
     })
     save_user_settings(users)
     return {"msg": "registered"}, 201
-
 
 @app.route("/sms", methods=["POST"])
 def sms_webhook():
@@ -378,7 +362,7 @@ def sms_webhook():
 
     resp = MessagingResponse()
 
-    # --- STATUS ------------------------------------------------------------
+    # STATUS
     if parts[0] == "STATUS":
         try:
             delays = get_delays()
@@ -393,13 +377,13 @@ def sms_webhook():
         resp.message(msg)
         return Response(str(resp), mimetype="application/xml")
 
-    # --- THRESHOLD n --------------------------------------------------------
+    # THRESHOLD n
     if parts[0] == "THRESHOLD" and len(parts) == 2 and parts[1].isdigit():
         user["threshold"] = int(parts[1])
         save_user_settings(users)
         resp.message(f"✅ Threshold set to {parts[1]} minutes.")
 
-    # --- WINDOW HH:MM-HH:MM[,HH:MM-HH:MM] ----------------------------------
+    # WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]
     elif parts[0] == "WINDOW" and len(parts) == 2:
         try:
             user["windows"] = parse_windows(parts[1])
@@ -409,23 +393,19 @@ def sms_webhook():
         except ValueError:
             resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]")
 
-    # --- HELP / LIST --------------------------------------------------------
+    # HELP / LIST
     elif parts[0] in ("LIST", "HELP"):
-        resp.message(
-            "Commands: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]"
-        )
+        resp.message("Commands: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]")
 
     else:
         resp.message("Unknown command. Send HELP for options.")
 
     return Response(str(resp), mimetype="application/xml")
 
-
+# ──────────────────── Entrypoint ───────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BridgeDelay monitor")
-    parser.add_argument(
-        "--poll", action="store_true", help="Run delay check loop every 5 minutes"
-    )
+    parser.add_argument("--poll", action="store_true", help="Run delay check loop every 5 minutes")
     args = parser.parse_args()
 
     if args.poll:
