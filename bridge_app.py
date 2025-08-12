@@ -341,8 +341,21 @@ def status():
     snap = load_snapshot()
     return jsonify(snap if snap else {"msg": "no data yet"})
 
-@app.route("/api/signup", methods=["POST"])
+@app.route("/api/signup", methods=["POST", "OPTIONS"])
+@cross_origin(
+    origins=[
+        "https://northvanupdates.com",
+        "https://www.northvanupdates.com"
+    ],
+    methods=["POST","OPTIONS"],
+    allow_headers=["Content-Type"],
+    max_age=600
+)
 def signup():
+    if request.method == "OPTIONS":
+        # Preflight – Flask-CORS adds the headers
+        return ("", 204)
+
     phone = (request.json.get("phone") if request.is_json else request.form.get("phone"))
     if not phone:
         abort(400, "phone field is required")
@@ -358,6 +371,7 @@ def signup():
     })
     save_user_settings(users)
     return {"msg": "registered"}, 201
+
 
 @app.route("/sms", methods=["POST"])
 def sms_webhook():
