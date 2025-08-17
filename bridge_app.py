@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-BridgeDelay — unified Maps-API + SMS webhook (+ OTP login)
-----------------------------------------------------------
-Endpoints:
-  GET  /                 -> health 200 OK
-  GET  /api/status       -> JSON snapshot of last poll
-  POST /api/signup       -> create a user row by phone (active True)
-  POST /sms              -> Twilio webhook (commands)
-  POST /api/otp/start    -> send OTP to phone (if registered)
-  POST /api/otp/verify   -> verify OTP; returns {token} if JWT_SECRET set
+BridgeDelay — unified Maps-API + SMS + OTP login (hardened)
+-----------------------------------------------------------
+Public endpoints (CORS-limited to your site):
+  GET  /                 -> 200 OK
+  GET  /api/status       -> latest snapshot
+  POST /api/signup       -> create user (by phone)
+  POST /api/otp/start    -> send OTP to registered phone
+  POST /api/otp/verify   -> verify OTP, returns JWT if JWT_SECRET set
+Protected (Bearer JWT):
+  GET/POST /api/user/settings
+Twilio webhook:
+  POST /sms              -> validates Twilio signature; supports STATUS/THRESHOLD/WINDOW
 """
 
 from __future__ import annotations
@@ -21,14 +24,17 @@ import re
 import threading
 import secrets
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Dict, List
 
 import requests
-from flask import Flask, request, abort, jsonify, Response
+from flask import Flask, request, abort, jsonify, Response, g
 from flask_cors import CORS
+from functools import wraps
+
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.request_validator import RequestValidator
 
 # Azure Tables
 from azure.identity import DefaultAzureCredential
@@ -37,7 +43,7 @@ from azure.data.tables import TableServiceClient
 # Local timezone for window checks
 from zoneinfo import ZoneInfo
 
-# Optional JWT for sessions (set JWT_SECRET to enable)
+# Optional JWT for sessions
 try:
     import jwt  # PyJWT
 except Exception:
@@ -72,6 +78,7 @@ def add_cors_headers(resp):
         resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return resp
 
+# Catch-all preflight for any /api/* path
 @app.route("/api/<path:_any>", methods=["OPTIONS"])
 def any_api_options(_any):
     return ("", 204)
@@ -79,25 +86,25 @@ def any_api_options(_any):
 # ──────────────────── Config — ENV vars ────────────────────────────────────
 GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
 ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
-AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
+AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")           # also used for Twilio signature check
 FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
 
-TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")  # https://<acct>.table.core.windows.net
+TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")          # https://<acct>.table.core.windows.net
 AZURE_CONN      = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))  # seconds
 ENABLE_POLLING = os.getenv("ENABLE_POLLING", "1").lower() not in ("0", "false", "no")
 
-# Optional JWT
-JWT_SECRET = os.getenv("JWT_SECRET")  # if set, /api/otp/verify returns a JWT
-JWT_TTL_MIN = int(os.getenv("JWT_TTL_MIN", "43200"))  # default 30 days
+# JWT (required for login token)
+JWT_SECRET   = os.getenv("JWT_SECRET")                  # set this to enable token issuance
+JWT_TTL_MIN  = int(os.getenv("JWT_TTL_MIN", "43200"))   # 30 days default
 
 # OTP config
-OTP_TABLE          = "userOtp"
-OTP_CODE_TTL_SEC   = 5 * 60        # code valid 5 minutes
-OTP_RESEND_COOLDOWN= 60            # min 60s between sends
-OTP_MAX_ATTEMPTS   = 6             # lock after too many tries
-OTP_LOCK_MIN       = 10            # lock window after max attempts
+OTP_TABLE            = "userOtp"
+OTP_CODE_TTL_SEC     = 5 * 60        # 5 minutes
+OTP_RESEND_COOLDOWN  = 60            # min seconds between sends
+OTP_MAX_ATTEMPTS     = 6             # attempts before lock
+OTP_LOCK_MIN         = 10            # lock for N minutes after max attempts
 
 # Google Routes API
 ROUTES_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
@@ -113,7 +120,7 @@ NB_END   = (49.324345, -123.122962)
 SB_START = (49.324432, -123.122765)
 SB_END   = (49.292738, -123.133985)
 
-# Baselines (minutes) — only used as fallback if staticDuration missing
+# Baselines (minutes) — fallback only if staticDuration missing
 NB_BASE_MIN = 9
 SB_BASE_MIN = 4
 
@@ -145,19 +152,18 @@ def _get_table_client(name: str):
     return svc.get_table_client(name)
 
 def normalize_phone(raw: str) -> str:
-    """Turn 604-555-1212, (604) 555-1212, 16045551212 → +16045551212.
-       If it already starts with +, we trust it."""
+    """604-555-1212, (604)555-1212, 16045551212 → +16045551212 (Canada/US only)."""
+    if not raw:
+        raise ValueError("invalid phone")
     s = raw.strip()
     if s.startswith("+"):
-        # basic sanity: must be +[digits], length 11-15 is typical
         digits = re.sub(r"\D", "", s)
         return "+" + digits
     digits = re.sub(r"\D", "", s)
-    if len(digits) == 10:
+    if len(digits) == 10:                # NPA-NXX-XXXX
         return "+1" + digits
     if len(digits) == 11 and digits[0] == "1":
         return "+1" + digits[1:]
-    # If you want broader country support, expand here.
     raise ValueError("invalid phone")
 
 def _jwt_for_phone(phone: str) -> str | None:
@@ -165,24 +171,40 @@ def _jwt_for_phone(phone: str) -> str | None:
         return None
     payload = {
         "sub": phone,
+        "iss": "northvanupdates.com",
+        "aud": "northvanupdates.com",
         "iat": int(time.time()),
         "exp": int(time.time()) + JWT_TTL_MIN * 60,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
-
-def _phone_from_request(req) -> str | None:
+def _decode_jwt_from_header():
     if not (JWT_SECRET and jwt):
-        return None
-    auth = req.headers.get("Authorization", "")
+        abort(501, "JWT not configured")
+    auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        return None
-    token = auth.split(" ", 1)[1]
+        abort(401)
+    token = auth.split(" ", 1)[1].strip()
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-        return payload.get("sub")
+        claims = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=["HS256"],
+            audience="northvanupdates.com",
+        )
+        return claims
     except Exception:
-        return None
+        abort(401)
+
+def require_auth(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        claims = _decode_jwt_from_header()
+        g.phone = claims.get("sub")
+        if not g.phone:
+            abort(401)
+        return f(*args, **kwargs)
+    return wrapper
 
 # ──────────────────── Google delay logic (index-safe + staticDuration) ─────
 def _latlng(pair):
@@ -291,7 +313,7 @@ def send_sms(body: str, to: str) -> str:
     msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
     return msg.sid
 
-# ──────────────────── OTP helpers (Azure Table) ────────────────────────────
+# ──────────────────── OTP store (SHA-256 hashed codes) ─────────────────────
 def _otp_table():
     return _get_table_client(OTP_TABLE)
 
@@ -299,7 +321,6 @@ def _hash_code(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 def _gen_code() -> str:
-    # 6-digit numeric, avoid leading zeros confusion by formatting
     return f"{secrets.randbelow(1_000_000):06d}"
 
 def _now_epoch() -> int:
@@ -314,14 +335,13 @@ def otp_can_send(ent: Dict[str, Any] | None) -> bool:
 def otp_locked(ent: Dict[str, Any] | None) -> bool:
     if not ent:
         return False
-    locked_until = int(ent.get("lockedUntil", 0))
-    return _now_epoch() < locked_until
+    return _now_epoch() < int(ent.get("lockedUntil", 0))
 
 def otp_issue_and_send(phone_e164: str):
     tc = _otp_table()
     if not tc:
         raise RuntimeError("OTP storage not configured")
-    # Read existing to enforce cooldown/lock
+    # read current row
     ent = None
     try:
         ent = tc.get_entity(partition_key="otp", row_key=phone_e164)
@@ -348,7 +368,7 @@ def otp_issue_and_send(phone_e164: str):
     }
     tc.upsert_entity(entity)
 
-    # Send SMS
+    # Send SMS (keep message generic)
     send_sms(f"Your NorthVanUpdates code: {code}. Expires in 5 minutes.", phone_e164)
     return True, "sent"
 
@@ -368,7 +388,6 @@ def otp_verify_and_consume(phone_e164: str, code: str) -> bool:
         return False
 
     if now > int(ent.get("expiresAt", 0)):
-        # expired: increment attempts and keep entity (user may request new)
         ent["attempts"] = attempts + 1
         if ent["attempts"] >= OTP_MAX_ATTEMPTS:
             ent["lockedUntil"] = now + OTP_LOCK_MIN * 60
@@ -382,7 +401,7 @@ def otp_verify_and_consume(phone_e164: str, code: str) -> bool:
         tc.upsert_entity(ent)
         return False
 
-    # Success: delete the OTP so it can't be reused
+    # success → delete row so code can't be reused
     tc.delete_entity(partition_key="otp", row_key=phone_e164)
     return True
 
@@ -397,8 +416,8 @@ def severity_level(delay: int) -> int:
     else:
         return 3
 
-def within_window(now: str, windows):
-    return any(w["start"] <= now <= w["end"] for w in windows)
+def within_window(now_hhmm: str, windows):
+    return any(w["start"] <= now_hhmm <= w["end"] for w in windows)
 
 def check_and_notify():
     current = get_delays()
@@ -526,7 +545,7 @@ def otp_start():
     try:
         phone = normalize_phone(raw)
     except ValueError:
-        # Always respond 200 to avoid number enumeration
+        # Always respond ok to avoid leaking registration
         return jsonify({"ok": True, "status": "sent"}), 200
 
     # Only send OTP for registered numbers
@@ -546,7 +565,7 @@ def otp_start():
 def otp_verify():
     data = request.get_json(silent=True) or {}
     raw = data.get("phone")
-    code = data.get("code", "").strip()
+    code = (data.get("code") or "").strip()
     if not raw or not code:
         abort(400, "phone and code are required")
     try:
@@ -566,41 +585,74 @@ def otp_verify():
     return jsonify(resp), 200
 
 # ---- User settings (requires JWT) -----------------------------------------
-@app.route("/api/user/settings", methods=["GET", "POST"])
-def user_settings_api():
-    phone = _phone_from_request(request)
-    if not phone:
-        abort(401)
+@app.route("/api/user/settings", methods=["GET"])
+@require_auth
+def get_my_settings():
+    phone = g.phone
     users = get_user_settings()
-    user = next((u for u in users if u["phone"] == phone), None)
-    if not user:
-        abort(404)
-    if request.method == "GET":
-        return jsonify({"phone": phone, "threshold": user.get("threshold", 0), "windows": user.get("windows", [])})
+    me = next((u for u in users if u["phone"] == phone), None)
+    if not me:
+        me = {"phone": phone, "active": True, "threshold": 0,
+              "windows": [{"start": "00:00", "end": "23:59"}]}
+        users.append(me)
+        save_user_settings(users)
+    return jsonify({
+        "phone": phone,
+        "active": bool(me.get("active", True)),
+        "threshold": int(me.get("threshold", 0)),
+        "windows": me.get("windows", []),
+    })
 
+@app.route("/api/user/settings", methods=["POST"])
+@require_auth
+def update_my_settings():
+    phone = g.phone
     data = request.get_json(silent=True) or {}
-    if "threshold" in data:
-        try:
-            user["threshold"] = int(data["threshold"])
-        except Exception:
-            return jsonify({"ok": False, "error": "invalid_threshold"}), 400
-    if "windows" in data:
-        try:
-            user["windows"] = parse_windows(data["windows"])
-        except ValueError as e:
-            return jsonify({"ok": False, "error": str(e)}), 400
-    save_user_settings(users)
-    return jsonify({"ok": True, "settings": user}), 200
+    threshold = int(data.get("threshold", 0))
 
-# ---- Twilio inbound SMS ----------------------------------------------------
+    windows_raw = data.get("windows", [])
+    if isinstance(windows_raw, str):
+        try:
+            windows = parse_windows(windows_raw)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    elif isinstance(windows_raw, list):
+        windows = windows_raw
+    else:
+        windows = [{"start": "00:00", "end": "23:59"}]
+
+    users = get_user_settings()
+    me = next((u for u in users if u["phone"] == phone), None)
+    if not me:
+        me = {"phone": phone}
+        users.append(me)
+    me["active"] = bool(data.get("active", True))
+    me["threshold"] = threshold
+    me["windows"] = windows
+    save_user_settings(users)
+    return jsonify({"ok": True})
+
+# Optional helper for debugging your token
+@app.route("/api/whoami", methods=["GET"])
+@require_auth
+def whoami():
+    return jsonify({"phone": g.phone})
+
+# ---- Twilio inbound SMS (with signature verification) ---------------------
 @app.route("/sms", methods=["POST"])
 def sms_webhook():
-    if not request.form.get("From"):
+    # Verify Twilio signature
+    sig = request.headers.get("X-Twilio-Signature", "")
+    validator = RequestValidator(AUTH_TOKEN or "")
+    if not validator.validate(request.url, request.form, sig):
+        abort(403)
+
+    from_number = request.form.get("From", "").strip()
+    if not from_number:
         abort(400)
 
-    from_number = request.form["From"]  # already in E.164
-    body_raw    = request.form.get("Body", "").strip()
-    parts       = body_raw.upper().split(maxsplit=1)
+    body_raw = request.form.get("Body", "").strip()
+    parts    = body_raw.upper().split(maxsplit=1) if body_raw else ["HELP"]
 
     users = get_user_settings()
     user  = next((u for u in users if u["phone"] == from_number), None)
