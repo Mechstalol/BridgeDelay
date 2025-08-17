@@ -1,8 +1,9 @@
-flask>=3.0
-gunicorn>=21.2
-requests>=2.31
-twilio>=9.0
+Flask
 flask-cors>=4.0
-
+gunicorn>=21.2
+requests
+twilio
+azure-identity
 azure-data-tables>=12.5
-azure-identity>=1.17
+PyJWT>=2.8
+Flask-Limiter>=3.5
