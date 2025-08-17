@@ -170,6 +170,20 @@ def _jwt_for_phone(phone: str) -> str | None:
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
+
+def _phone_from_request(req) -> str | None:
+    if not (JWT_SECRET and jwt):
+        return None
+    auth = req.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        return payload.get("sub")
+    except Exception:
+        return None
+
 # ──────────────────── Google delay logic (index-safe + staticDuration) ─────
 def _latlng(pair):
     lat, lng = pair
@@ -550,6 +564,33 @@ def otp_verify():
         resp["token_type"] = "Bearer"
         resp["expires_in"] = JWT_TTL_MIN * 60
     return jsonify(resp), 200
+
+# ---- User settings (requires JWT) -----------------------------------------
+@app.route("/api/user/settings", methods=["GET", "POST"])
+def user_settings_api():
+    phone = _phone_from_request(request)
+    if not phone:
+        abort(401)
+    users = get_user_settings()
+    user = next((u for u in users if u["phone"] == phone), None)
+    if not user:
+        abort(404)
+    if request.method == "GET":
+        return jsonify({"phone": phone, "threshold": user.get("threshold", 0), "windows": user.get("windows", [])})
+
+    data = request.get_json(silent=True) or {}
+    if "threshold" in data:
+        try:
+            user["threshold"] = int(data["threshold"])
+        except Exception:
+            return jsonify({"ok": False, "error": "invalid_threshold"}), 400
+    if "windows" in data:
+        try:
+            user["windows"] = parse_windows(data["windows"])
+        except ValueError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+    save_user_settings(users)
+    return jsonify({"ok": True, "settings": user}), 200
 
 # ---- Twilio inbound SMS ----------------------------------------------------
 @app.route("/sms", methods=["POST"])

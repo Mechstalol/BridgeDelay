@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BridgeDelay • Account</title>
+  <link rel="stylesheet" href="account.css">
+</head>
+<body>
+  <header class="navbar">
+    <a href="../main.html" class="logo">BridgeDelay</a>
+    <nav>
+      <a href="#" id="logout">Log Out</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <h1 class="hero__title">Your Settings</h1>
+  </section>
+
+  <section class="signup">
+    <form id="settings-form" class="signup__form">
+      <input type="number" id="threshold" placeholder="Delay threshold (minutes)">
+      <input type="text" id="windows" placeholder="Windows e.g. 07:00-09:00,16:00-18:00">
+      <button type="submit" class="cta">Save</button>
+    </form>
+    <small id="settings-status" class="signup__note"></small>
+  </section>
+
+  <footer class="footer">
+    <p>© 2025 BridgeDelay • Made in 🇨🇦</p>
+  </footer>
+
+  <script src="account.js"></script>
+</body>
+</html>
