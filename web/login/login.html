@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BridgeDelay • Log In</title>
+  <link rel="stylesheet" href="login.css">
+</head>
+<body>
+  <header class="navbar">
+    <a href="../main.html" class="logo">BridgeDelay</a>
+    <nav>
+      <a href="../main.html#features">Features</a>
+      <a href="../signup/signup.html">Sign Up</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <h1 class="hero__title">Log In</h1>
+    <p class="hero__subtitle">Enter your phone number to receive a one-time code.</p>
+  </section>
+
+  <section class="signup">
+    <form id="phone-form" class="signup__form">
+      <input type="tel" id="phone" placeholder="Phone" required>
+      <button type="submit" class="cta">Send Code</button>
+    </form>
+
+    <form id="code-form" class="signup__form" style="display:none">
+      <input type="text" id="code" placeholder="6-digit code" required>
+      <button type="submit" class="cta">Verify</button>
+    </form>
+
+    <small id="login-status" class="signup__note"></small>
+  </section>
+
+  <footer class="footer">
+    <p>© 2025 BridgeDelay • Made in 🇨🇦</p>
+  </footer>
+
+  <script src="login.js"></script>
+</body>
+</html>
