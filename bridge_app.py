@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-BridgeDelay — unified Maps-API + SMS webhook
--------------------------------------------
-* Polling loop (5-min): calls Google Routes API, computes delay and pushes
-  thresholded SMS alerts to registered users.
-* Flask app (run under gunicorn) with:
-    • /                 health probe 200 OK
-    • /api/status      JSON snapshot of last poll
-    • /api/signup      POST to register a phone (threshold/windows)
-    • /sms             Twilio webhook: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]
+BridgeDelay — unified Maps-API + SMS webhook (+ OTP login)
+----------------------------------------------------------
+Endpoints:
+  GET  /                 -> health 200 OK
+  GET  /api/status       -> JSON snapshot of last poll
+  POST /api/signup       -> create a user row by phone (active True)
+  POST /sms              -> Twilio webhook (commands)
+  POST /api/otp/start    -> send OTP to phone (if registered)
+  POST /api/otp/verify   -> verify OTP; returns {token} if JWT_SECRET set
 """
 
 from __future__ import annotations
@@ -19,43 +19,48 @@ import json
 import argparse
 import re
 import threading
-from datetime import datetime
+import secrets
+import hashlib
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 import requests
 from flask import Flask, request, abort, jsonify, Response
-from flask_cors import CORS  # no per-route decorator needed with after_request
+from flask_cors import CORS
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 
-# ── Azure Tables (Managed Identity first, conn string fallback) ────────────
+# Azure Tables
 from azure.identity import DefaultAzureCredential
 from azure.data.tables import TableServiceClient
 
 # Local timezone for window checks
 from zoneinfo import ZoneInfo
 
-# ──────────────────── Flask setup ──────────────────────────────────────────
-app = Flask(__name__)  # gunicorn target →  bridge_app:app
+# Optional JWT for sessions (set JWT_SECRET to enable)
+try:
+    import jwt  # PyJWT
+except Exception:
+    jwt = None
 
-# Allow our site origins (CORS is origin-only; paths like /signup don't matter)
+# ──────────────────── Flask setup ──────────────────────────────────────────
+app = Flask(__name__)  # gunicorn target → bridge_app:app
+
 ALLOWED_ORIGINS = {
     "https://northvanupdates.com",
     "https://www.northvanupdates.com",
 }
 
-# Enable CORS globally for /api/* (Flask-CORS), and also add a safety net below.
 CORS(
     app,
     resources={r"/api/*": {
         "origins": list(ALLOWED_ORIGINS),
-        "allow_headers": ["Content-Type"],
+        "allow_headers": ["Content-Type", "Authorization"],
         "methods": ["GET", "POST", "OPTIONS"],
         "max_age": 600
     }}
 )
 
-# Safety net: ensure every /api/* response (including OPTIONS) has CORS headers
 @app.after_request
 def add_cors_headers(resp):
     if request.path.startswith("/api/"):
@@ -64,10 +69,9 @@ def add_cors_headers(resp):
             resp.headers["Access-Control-Allow-Origin"] = origin
             resp.headers["Vary"] = "Origin"
         resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return resp
 
-# Catch-all preflight for any /api/* path
 @app.route("/api/<path:_any>", methods=["OPTIONS"])
 def any_api_options(_any):
     return ("", 204)
@@ -77,17 +81,25 @@ GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
 ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
 FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
-TO_NUMBERS   = os.getenv("TO_NUMBERS", "")  # optional: one-time seed only
 
-# Managed Identity endpoint for Tables (preferred), with local-dev fallback
-TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")  # e.g. https://<acct>.table.core.windows.net
-AZURE_CONN      = os.getenv("AZURE_STORAGE_CONNECTION_STRING")  # optional for local dev
+TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")  # https://<acct>.table.core.windows.net
+AZURE_CONN      = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 
-# Background polling configuration
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))  # seconds
 ENABLE_POLLING = os.getenv("ENABLE_POLLING", "1").lower() not in ("0", "false", "no")
 
-# Google Routes API endpoint + headers
+# Optional JWT
+JWT_SECRET = os.getenv("JWT_SECRET")  # if set, /api/otp/verify returns a JWT
+JWT_TTL_MIN = int(os.getenv("JWT_TTL_MIN", "43200"))  # default 30 days
+
+# OTP config
+OTP_TABLE          = "userOtp"
+OTP_CODE_TTL_SEC   = 5 * 60        # code valid 5 minutes
+OTP_RESEND_COOLDOWN= 60            # min 60s between sends
+OTP_MAX_ATTEMPTS   = 6             # lock after too many tries
+OTP_LOCK_MIN       = 10            # lock window after max attempts
+
+# Google Routes API
 ROUTES_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
 HEADERS = {
     "Content-Type": "application/json",
@@ -101,7 +113,7 @@ NB_END   = (49.324345, -123.122962)
 SB_START = (49.324432, -123.122765)
 SB_END   = (49.292738, -123.133985)
 
-# Baselines (minutes)
+# Baselines (minutes) — only used as fallback if staticDuration missing
 NB_BASE_MIN = 9
 SB_BASE_MIN = 4
 
@@ -111,10 +123,54 @@ USER_SETTINGS_FILE = "user_settings.json"  # fallback
 STATE_TABLE        = "lastStatus"
 USER_TABLE         = "userSettings"
 
-# Emoji per severity
 SEV_EMOJI = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
 
-# ──────────────────── Helper functions ─────────────────────────────────────
+# ──────────────────── Helpers: Tables, phones, JWT ─────────────────────────
+def _get_table_service():
+    if TABLES_ENDPOINT:
+        cred = DefaultAzureCredential()
+        return TableServiceClient(endpoint=TABLES_ENDPOINT, credential=cred)
+    if AZURE_CONN:
+        return TableServiceClient.from_connection_string(AZURE_CONN)
+    return None
+
+def _get_table_client(name: str):
+    svc = _get_table_service()
+    if not svc:
+        return None
+    try:
+        svc.create_table_if_not_exists(name)
+    except Exception:
+        pass
+    return svc.get_table_client(name)
+
+def normalize_phone(raw: str) -> str:
+    """Turn 604-555-1212, (604) 555-1212, 16045551212 → +16045551212.
+       If it already starts with +, we trust it."""
+    s = raw.strip()
+    if s.startswith("+"):
+        # basic sanity: must be +[digits], length 11-15 is typical
+        digits = re.sub(r"\D", "", s)
+        return "+" + digits
+    digits = re.sub(r"\D", "", s)
+    if len(digits) == 10:
+        return "+1" + digits
+    if len(digits) == 11 and digits[0] == "1":
+        return "+1" + digits[1:]
+    # If you want broader country support, expand here.
+    raise ValueError("invalid phone")
+
+def _jwt_for_phone(phone: str) -> str | None:
+    if not (JWT_SECRET and jwt):
+        return None
+    payload = {
+        "sub": phone,
+        "iat": int(time.time()),
+        "exp": int(time.time()) + JWT_TTL_MIN * 60,
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+# ──────────────────── Google delay logic (index-safe + staticDuration) ─────
 def _latlng(pair):
     lat, lng = pair
     return {"latLng": {"latitude": lat, "longitude": lng}}
@@ -137,55 +193,22 @@ def get_delays() -> Dict[str, Dict[str, int]]:
     r.raise_for_status()
     items = r.json()  # order not guaranteed
 
-    # Map by (originIndex, destinationIndex)
     by_idx = {(it["originIndex"], it["destinationIndex"]): it for it in items}
-
     nb = by_idx[(0, 0)]
     sb = by_idx[(1, 1)]
 
     def to_min(seconds_str: str) -> float:
-        # API returns like "534s" or "534.2s"
         return float(seconds_str.rstrip("s")) / 60.0
 
     def build(elem, fallback_base_min: int):
         live_min = to_min(elem["duration"])
         base_min = to_min(elem["staticDuration"]) if "staticDuration" in elem else float(fallback_base_min)
-        delay_min = max(0.0, live_min - base_min)  # avoid negative delay
+        delay_min = max(0.0, live_min - base_min)
+        return {"live": round(live_min), "base": round(base_min), "delay": round(delay_min)}
 
-        return {
-            "live": round(live_min),
-            "base": round(base_min),
-            "delay": round(delay_min),
-        }
+    return {"NB": build(nb, NB_BASE_MIN), "SB": build(sb, SB_BASE_MIN)}
 
-    return {
-        "NB": build(nb, NB_BASE_MIN),
-        "SB": build(sb, SB_BASE_MIN),
-    }
-
-
-# ──────────────────── Persistence helpers (Tables + fallback) ─────────────
-def _get_table_client(name: str):
-    """
-    Prefer Managed Identity using TABLES_ENDPOINT.
-    Fallback to connection string if provided (e.g., local dev).
-    Return None to trigger JSON file fallback when nothing is configured.
-    """
-    svc = None
-    if TABLES_ENDPOINT:
-        cred = DefaultAzureCredential()
-        svc = TableServiceClient(endpoint=TABLES_ENDPOINT, credential=cred)
-    elif AZURE_CONN:
-        svc = TableServiceClient.from_connection_string(AZURE_CONN)
-    else:
-        return None
-
-    try:
-        svc.create_table_if_not_exists(name)
-    except Exception:
-        pass
-    return svc.get_table_client(name)
-
+# ──────────────────── Persistence: status & users ──────────────────────────
 def load_snapshot() -> Dict[str, Any]:
     tc = _get_table_client(STATE_TABLE)
     if tc:
@@ -246,39 +269,7 @@ def save_user_settings(settings: List[Dict[str, Any]]):
         json.dump(settings, f, indent=2)
 
 def get_user_settings():
-    # Table is the source of truth — no env fallback at runtime.
     return load_user_settings()
-
-# One-time bootstrap: seed TO_NUMBERS into table if table is empty
-_bootstrap_done = False
-def bootstrap_env_numbers_once():
-    global _bootstrap_done
-    if _bootstrap_done:
-        return
-    _bootstrap_done = True
-
-    tc = _get_table_client(USER_TABLE)
-    if not tc:
-        return  # running with file fallback; nothing to seed
-
-    has_rows = False
-    for _ in tc.query_entities("PartitionKey eq 'user'"):
-        has_rows = True
-        break
-    if has_rows:
-        return
-
-    nums = [n.strip() for n in TO_NUMBERS.split(",") if n.strip()]
-    for num in nums:
-        tc.upsert_entity({
-            "PartitionKey": "user",
-            "RowKey": num,
-            "active": True,
-            "threshold": 0,
-            "windows": json.dumps([{"start": "00:00", "end": "23:59"}]),
-        })
-    if nums:
-        print(f"Seeded {len(nums)} numbers from TO_NUMBERS into {USER_TABLE}.")
 
 # ──────────────────── Twilio helpers ───────────────────────────────────────
 def send_sms(body: str, to: str) -> str:
@@ -286,7 +277,102 @@ def send_sms(body: str, to: str) -> str:
     msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
     return msg.sid
 
-# ──────────────────── Business logic ───────────────────────────────────────
+# ──────────────────── OTP helpers (Azure Table) ────────────────────────────
+def _otp_table():
+    return _get_table_client(OTP_TABLE)
+
+def _hash_code(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+def _gen_code() -> str:
+    # 6-digit numeric, avoid leading zeros confusion by formatting
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+def _now_epoch() -> int:
+    return int(time.time())
+
+def otp_can_send(ent: Dict[str, Any] | None) -> bool:
+    if not ent:
+        return True
+    last = int(ent.get("lastSentAt", 0))
+    return (_now_epoch() - last) >= OTP_RESEND_COOLDOWN
+
+def otp_locked(ent: Dict[str, Any] | None) -> bool:
+    if not ent:
+        return False
+    locked_until = int(ent.get("lockedUntil", 0))
+    return _now_epoch() < locked_until
+
+def otp_issue_and_send(phone_e164: str):
+    tc = _otp_table()
+    if not tc:
+        raise RuntimeError("OTP storage not configured")
+    # Read existing to enforce cooldown/lock
+    ent = None
+    try:
+        ent = tc.get_entity(partition_key="otp", row_key=phone_e164)
+    except Exception:
+        ent = None
+
+    if otp_locked(ent):
+        return False, "too_many_attempts"
+
+    if not otp_can_send(ent):
+        return False, "cooldown"
+
+    code = _gen_code()
+    now = _now_epoch()
+    exp = now + OTP_CODE_TTL_SEC
+    entity = {
+        "PartitionKey": "otp",
+        "RowKey": phone_e164,
+        "codeHash": _hash_code(code),
+        "expiresAt": exp,
+        "attempts": 0,
+        "lastSentAt": now,
+        "lockedUntil": 0,
+    }
+    tc.upsert_entity(entity)
+
+    # Send SMS
+    send_sms(f"Your NorthVanUpdates code: {code}. Expires in 5 minutes.", phone_e164)
+    return True, "sent"
+
+def otp_verify_and_consume(phone_e164: str, code: str) -> bool:
+    tc = _otp_table()
+    if not tc:
+        return False
+    try:
+        ent = tc.get_entity(partition_key="otp", row_key=phone_e164)
+    except Exception:
+        return False
+
+    now = _now_epoch()
+    attempts = int(ent.get("attempts", 0))
+
+    if otp_locked(ent):
+        return False
+
+    if now > int(ent.get("expiresAt", 0)):
+        # expired: increment attempts and keep entity (user may request new)
+        ent["attempts"] = attempts + 1
+        if ent["attempts"] >= OTP_MAX_ATTEMPTS:
+            ent["lockedUntil"] = now + OTP_LOCK_MIN * 60
+        tc.upsert_entity(ent)
+        return False
+
+    if _hash_code(code) != ent.get("codeHash"):
+        ent["attempts"] = attempts + 1
+        if ent["attempts"] >= OTP_MAX_ATTEMPTS:
+            ent["lockedUntil"] = now + OTP_LOCK_MIN * 60
+        tc.upsert_entity(ent)
+        return False
+
+    # Success: delete the OTP so it can't be reused
+    tc.delete_entity(partition_key="otp", row_key=phone_e164)
+    return True
+
+# ──────────────────── Business logic (alerts) ──────────────────────────────
 def severity_level(delay: int) -> int:
     if delay <= 5:
         return 0
@@ -322,15 +408,14 @@ def check_and_notify():
         f"SB: {sb_s['live']}m (base {sb_s['base']} +{sb_s['delay']})"
     )
 
-    # Use Vancouver local time for windows
-    now = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
+    now_str = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
 
     for u in get_user_settings():
         if not u.get("active", True):
             continue
         if (nb_s["delay"] < u["threshold"] and sb_s["delay"] < u["threshold"]):
             continue
-        if not within_window(now, u["windows"]):
+        if not within_window(now_str, u["windows"]):
             continue
         sid = send_sms(body, u["phone"])
         print(f"🔔 Sent to {u['phone']}: {sid}")
@@ -345,9 +430,6 @@ def start_background_polling():
     if _poll_started:
         return
     _poll_started = True
-
-    # Seed env numbers once into the table if it's empty.
-    bootstrap_env_numbers_once()
 
     if not ENABLE_POLLING or POLL_INTERVAL <= 0:
         print("Background polling disabled.")
@@ -364,7 +446,6 @@ def start_background_polling():
 
     threading.Thread(target=loop, daemon=True).start()
 
-# Flask 3: start background thread on first request
 @app.before_request
 def _start_polling() -> None:
     start_background_polling()
@@ -387,7 +468,7 @@ def parse_windows(s: str):
         windows.append({"start": start, "end": end})
     return windows
 
-# ──────────────────── Flask routes ─────────────────────────────────────────
+# ──────────────────── Routes ───────────────────────────────────────────────
 @app.route("/", methods=["GET"])
 def health():
     return "ok", 200
@@ -399,10 +480,14 @@ def status():
 
 @app.route("/api/signup", methods=["POST"])
 def signup():
-    # (OPTIONS preflight is handled by any_api_options + after_request)
-    phone = (request.json.get("phone") if request.is_json else request.form.get("phone"))
-    if not phone:
+    data = request.get_json(silent=True) or {}
+    raw = data.get("phone") if request.is_json else request.form.get("phone")
+    if not raw:
         abort(400, "phone field is required")
+    try:
+        phone = normalize_phone(raw)
+    except ValueError:
+        abort(400, "invalid phone")
 
     users = get_user_settings()
     if any(u["phone"] == phone for u in users):
@@ -417,12 +502,62 @@ def signup():
     save_user_settings(users)
     return {"msg": "registered"}, 201
 
+# ---- OTP: start (send code) -----------------------------------------------
+@app.route("/api/otp/start", methods=["POST"])
+def otp_start():
+    data = request.get_json(silent=True) or {}
+    raw = data.get("phone")
+    if not raw:
+        abort(400, "phone is required")
+    try:
+        phone = normalize_phone(raw)
+    except ValueError:
+        # Always respond 200 to avoid number enumeration
+        return jsonify({"ok": True, "status": "sent"}), 200
+
+    # Only send OTP for registered numbers
+    if not any(u["phone"] == phone for u in get_user_settings()):
+        return jsonify({"ok": True, "status": "sent"}), 200
+
+    ok, status = otp_issue_and_send(phone)
+    if not ok and status == "cooldown":
+        return jsonify({"ok": True, "status": "cooldown"}), 200
+    if not ok and status == "too_many_attempts":
+        return jsonify({"ok": False, "error": "locked"}), 429
+
+    return jsonify({"ok": True, "status": "sent"}), 200
+
+# ---- OTP: verify -----------------------------------------------------------
+@app.route("/api/otp/verify", methods=["POST"])
+def otp_verify():
+    data = request.get_json(silent=True) or {}
+    raw = data.get("phone")
+    code = data.get("code", "").strip()
+    if not raw or not code:
+        abort(400, "phone and code are required")
+    try:
+        phone = normalize_phone(raw)
+    except ValueError:
+        abort(400, "invalid phone")
+
+    if not otp_verify_and_consume(phone, code):
+        return jsonify({"ok": False, "error": "invalid_or_expired"}), 401
+
+    token = _jwt_for_phone(phone)
+    resp = {"ok": True}
+    if token:
+        resp["token"] = token
+        resp["token_type"] = "Bearer"
+        resp["expires_in"] = JWT_TTL_MIN * 60
+    return jsonify(resp), 200
+
+# ---- Twilio inbound SMS ----------------------------------------------------
 @app.route("/sms", methods=["POST"])
 def sms_webhook():
     if not request.form.get("From"):
         abort(400)
 
-    from_number = request.form["From"]
+    from_number = request.form["From"]  # already in E.164
     body_raw    = request.form.get("Body", "").strip()
     parts       = body_raw.upper().split(maxsplit=1)
 
@@ -439,7 +574,6 @@ def sms_webhook():
 
     resp = MessagingResponse()
 
-    # STATUS
     if parts[0] == "STATUS":
         try:
             delays = get_delays()
@@ -454,13 +588,10 @@ def sms_webhook():
         resp.message(msg)
         return Response(str(resp), mimetype="application/xml")
 
-    # THRESHOLD n
     if parts[0] == "THRESHOLD" and len(parts) == 2 and parts[1].isdigit():
         user["threshold"] = int(parts[1])
         save_user_settings(users)
         resp.message(f"✅ Threshold set to {parts[1]} minutes.")
-
-    # WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]
     elif parts[0] == "WINDOW" and len(parts) == 2:
         try:
             user["windows"] = parse_windows(parts[1])
@@ -469,11 +600,8 @@ def sms_webhook():
             resp.message(f"✅ Windows set to {win_str}")
         except ValueError:
             resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]")
-
-    # HELP / LIST
     elif parts[0] in ("LIST", "HELP"):
         resp.message("Commands: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]")
-
     else:
         resp.message("Unknown command. Send HELP for options.")
 
