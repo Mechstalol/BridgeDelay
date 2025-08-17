@@ -2,18 +2,14 @@
 """
 BridgeDelay — unified Maps-API + SMS webhook (+ OTP login)
 ----------------------------------------------------------
-Endpoints:
-  GET  /                 -> health 200 OK
-  GET  /api/status       -> JSON snapshot of last poll
-  POST /api/signup       -> create a user row by phone (active True)
-  POST /api/otp/start    -> send OTP to phone (if registered)
-  POST /api/otp/verify   -> verify OTP; returns {token} if JWT_SECRET set
-  GET/POST /api/user/settings -> read/update user threshold/windows (JWT)
-  POST /sms              -> Twilio webhook (STATUS / THRESHOLD / WINDOW)
+Only notify when:
+  • severity bucket changes, OR
+  • delay moves by >= NOTIFY_MIN_STEP minutes vs last sent message.
 
-Notes:
-- Twilio signature verification is enabled by default. Set TWILIO_VALIDATE=0
-  in App Settings only for quick debugging, then turn it back on.
+Messages now show only delays (no base/live):
+  🚦 Lions Gate update
+  Northbound delay: Xm
+  Southbound delay: Ym
 """
 
 from __future__ import annotations
@@ -36,20 +32,15 @@ from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.request_validator import RequestValidator
 
-# Azure Tables
 from azure.identity import DefaultAzureCredential
 from azure.data.tables import TableServiceClient
-
-# Local timezone for window checks
 from zoneinfo import ZoneInfo
 
-# Optional JWT for sessions (set JWT_SECRET to enable)
 try:
     import jwt  # PyJWT
 except Exception:
     jwt = None
 
-# ──────────────────── Flask setup ──────────────────────────────────────────
 app = Flask(__name__)  # gunicorn target → bridge_app:app
 
 ALLOWED_ORIGINS = {
@@ -82,7 +73,7 @@ def add_cors_headers(resp):
 def any_api_options(_any):
     return ("", 204)
 
-# ──────────────────── Config — ENV vars ────────────────────────────────────
+# ── Config ─────────────────────────────────────────────────────────────────
 GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
 ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
@@ -91,24 +82,24 @@ FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
 TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")  # https://<acct>.table.core.windows.net
 AZURE_CONN      = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))  # seconds
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))
 ENABLE_POLLING = os.getenv("ENABLE_POLLING", "1").lower() not in ("0", "false", "no")
 
-# Optional JWT (for /api/user/settings)
-JWT_SECRET  = os.getenv("JWT_SECRET")                     # if set, /api/otp/verify returns a JWT
-JWT_TTL_MIN = int(os.getenv("JWT_TTL_MIN", "43200"))      # default 30 days
+JWT_SECRET  = os.getenv("JWT_SECRET")
+JWT_TTL_MIN = int(os.getenv("JWT_TTL_MIN", "43200"))  # 30 days
 
-# OTP config (Azure Table "userOtp")
+# NEW: notify rules
+NOTIFY_MIN_STEP    = int(os.getenv("NOTIFY_MIN_STEP", "5"))   # minutes
+NOTIFY_MIN_GAP_SEC = int(os.getenv("NOTIFY_MIN_GAP_SEC", "60"))
+
 OTP_TABLE            = "userOtp"
-OTP_CODE_TTL_SEC     = 5 * 60        # code valid 5 minutes
-OTP_RESEND_COOLDOWN  = 60            # min seconds between sends
-OTP_MAX_ATTEMPTS     = 6             # lock after too many tries
-OTP_LOCK_MIN         = 10            # minutes to lock after too many attempts
+OTP_CODE_TTL_SEC     = 5 * 60
+OTP_RESEND_COOLDOWN  = 60
+OTP_MAX_ATTEMPTS     = 6
+OTP_LOCK_MIN         = 10
 
-# Twilio signature verification toggle
 TWILIO_VALIDATE = os.getenv("TWILIO_VALIDATE", "1").lower() not in ("0", "false", "no")
 
-# Google Routes API
 ROUTES_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
 HEADERS = {
     "Content-Type": "application/json",
@@ -116,25 +107,22 @@ HEADERS = {
     "X-Goog-FieldMask": "originIndex,destinationIndex,duration,staticDuration",
 }
 
-# Lions Gate coords (lat, lng)
 NB_START = (49.283260, -123.119297)
 NB_END   = (49.324345, -123.122962)
 SB_START = (49.324432, -123.122765)
 SB_END   = (49.292738, -123.133985)
 
-# Baselines (minutes) — only used if staticDuration missing
 NB_BASE_MIN = 9
 SB_BASE_MIN = 4
 
-# Persistence targets
-STATE_FILE         = "last_status.json"    # fallback
-USER_SETTINGS_FILE = "user_settings.json"  # fallback
+STATE_FILE         = "last_status.json"
+USER_SETTINGS_FILE = "user_settings.json"
 STATE_TABLE        = "lastStatus"
 USER_TABLE         = "userSettings"
 
 SEV_EMOJI = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
 
-# ──────────────────── Helpers: Tables, phones, JWT ─────────────────────────
+# ── Helpers: Tables, phones, JWT ───────────────────────────────────────────
 def _get_table_service():
     if TABLES_ENDPOINT:
         cred = DefaultAzureCredential()
@@ -154,8 +142,6 @@ def _get_table_client(name: str):
     return svc.get_table_client(name)
 
 def normalize_phone(raw: str) -> str:
-    """Turn 604-555-1212, (604) 555-1212, 16045551212 → +16045551212.
-       If it already starts with +, keep only digits after +."""
     s = (raw or "").strip()
     if not s:
         raise ValueError("invalid phone")
@@ -192,29 +178,27 @@ def _phone_from_request(req) -> str | None:
     except Exception:
         return None
 
-# ──────────────────── Google delay logic (index-safe + staticDuration) ─────
+# ── Google delay logic (index-safe + staticDuration) ───────────────────────
 def _latlng(pair):
     lat, lng = pair
     return {"latLng": {"latitude": lat, "longitude": lng}}
 
 def get_delays() -> Dict[str, Dict[str, int]]:
-    """Return live, base (free-flow) and delay minutes for NB & SB."""
     body: Dict[str, Any] = {
         "origins": [
-            {"waypoint": {"location": _latlng(NB_START)}},  # originIndex = 0
-            {"waypoint": {"location": _latlng(SB_START)}},  # originIndex = 1
+            {"waypoint": {"location": _latlng(NB_START)}},
+            {"waypoint": {"location": _latlng(SB_START)}},
         ],
         "destinations": [
-            {"waypoint": {"location": _latlng(NB_END)}},    # destinationIndex = 0
-            {"waypoint": {"location": _latlng(SB_END)}},    # destinationIndex = 1
+            {"waypoint": {"location": _latlng(NB_END)}},
+            {"waypoint": {"location": _latlng(SB_END)}},
         ],
         "travelMode": "DRIVE",
         "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
     }
     r = requests.post(ROUTES_URL, headers=HEADERS, json=body, timeout=10)
     r.raise_for_status()
-    items = r.json()  # order not guaranteed
-
+    items = r.json()
     by_idx = {(it["originIndex"], it["destinationIndex"]): it for it in items}
     nb = by_idx[(0, 0)]
     sb = by_idx[(1, 1)]
@@ -230,8 +214,8 @@ def get_delays() -> Dict[str, Dict[str, int]]:
 
     return {"NB": build(nb, NB_BASE_MIN), "SB": build(sb, SB_BASE_MIN)}
 
-# ──────────────────── Persistence: status & users ──────────────────────────
-def load_snapshot() -> Dict[str, Any]:
+# ── Persistence (state & users) ────────────────────────────────────────────
+def _load_raw_state() -> Dict[str, Any]:
     tc = _get_table_client(STATE_TABLE)
     if tc:
         try:
@@ -245,14 +229,23 @@ def load_snapshot() -> Dict[str, Any]:
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
-def save_snapshot(snap: Dict[str, Any]):
+def _save_raw_state(state: Dict[str, Any]):
     tc = _get_table_client(STATE_TABLE)
     if tc:
-        ent = {"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(snap)}
+        ent = {"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(state)}
         tc.upsert_entity(ent)
         return
     with open(STATE_FILE, "w") as f:
-        json.dump(snap, f)
+        json.dump(state, f)
+
+def _extract_prev_sent(state: Dict[str, Any]) -> Dict[str, Any] | None:
+    # New format: {"poll": {...}, "last_sent": {...}, "last_sent_at": 123}
+    if isinstance(state, dict) and "last_sent" in state and isinstance(state["last_sent"], dict):
+        return state["last_sent"]
+    # Back-compat: old state directly had NB/SB at top
+    if "NB" in state and "SB" in state:
+        return {"NB": state["NB"], "SB": state["SB"]}
+    return None
 
 def load_user_settings() -> List[Dict[str, Any]]:
     tc = _get_table_client(USER_TABLE)
@@ -293,15 +286,13 @@ def save_user_settings(settings: List[Dict[str, Any]]):
 def get_user_settings():
     return load_user_settings()
 
-# ──────────────────── Twilio helpers ───────────────────────────────────────
+# ── Twilio helpers ─────────────────────────────────────────────────────────
 def send_sms(body: str, to: str) -> str:
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
     msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
     return msg.sid
 
-# Signature verification helpers (robust behind Azure proxies)
 def _twilio_request_url(req):
-    """Rebuild URL as Twilio likely signed it (handle Azure http→https, slash)."""
     url = req.url
     xf_proto = req.headers.get("X-Forwarded-Proto", "")
     if xf_proto and url.startswith("http://") and xf_proto == "https":
@@ -314,11 +305,10 @@ def _twilio_signature_ok(req):
     url = _twilio_request_url(req)
     if validator.validate(url, req.form, sig):
         return True
-    # also try toggling trailing slash
     alt = url.rstrip("/") if url.endswith("/") else url + "/"
     return validator.validate(alt, req.form, sig)
 
-# ──────────────────── OTP store (Azure Table) ──────────────────────────────
+# ── OTP (Azure Table) ──────────────────────────────────────────────────────
 def _otp_table():
     return _get_table_client(OTP_TABLE)
 
@@ -402,11 +392,10 @@ def otp_verify_and_consume(phone_e164: str, code: str) -> bool:
         tc.upsert_entity(ent)
         return False
 
-    # success → delete so code can't be reused
     tc.delete_entity(partition_key="otp", row_key=phone_e164)
     return True
 
-# ──────────────────── Business logic (alerts) ──────────────────────────────
+# ── Alert logic ────────────────────────────────────────────────────────────
 def severity_level(delay: int) -> int:
     if delay <= 5:
         return 0
@@ -420,30 +409,61 @@ def severity_level(delay: int) -> int:
 def within_window(now_hhmm: str, windows):
     return any(w["start"] <= now_hhmm <= w["end"] for w in windows)
 
+def _should_notify(prev_sent: Dict[str, Any], current: Dict[str, Any]) -> bool:
+    """True if severity changed OR either NB/SB delay moved by >= NOTIFY_MIN_STEP."""
+    if not prev_sent:
+        return False
+    nb, sb = current["NB"], current["SB"]
+    pnb, psb = prev_sent["NB"], prev_sent["SB"]
+
+    sev_changed = (
+        severity_level(nb["delay"]) != severity_level(pnb["delay"])
+        or severity_level(sb["delay"]) != severity_level(psb["delay"])
+    )
+    big_move = (
+        abs(nb["delay"] - pnb["delay"]) >= NOTIFY_MIN_STEP
+        or abs(sb["delay"] - psb["delay"]) >= NOTIFY_MIN_STEP
+    )
+    return sev_changed or big_move
+
 def check_and_notify():
     current = get_delays()
-    prev    = load_snapshot()
+    state = _load_raw_state() or {}
+    prev_sent = _extract_prev_sent(state)  # None on first run
 
-    nb_s, sb_s = current["NB"], current["SB"]
-    nb_sev = severity_level(nb_s["delay"])
-    sb_sev = severity_level(sb_s["delay"])
-    old_nb_sev = severity_level(prev.get("NB", {}).get("delay", -1)) if prev else None
-    old_sb_sev = severity_level(prev.get("SB", {}).get("delay", -1)) if prev else None
+    # Always record the latest poll (for /api/status)
+    new_state: Dict[str, Any] = {"poll": current}
+    if "last_sent" in state:
+        new_state["last_sent"] = state["last_sent"]
+    if "last_sent_at" in state:
+        new_state["last_sent_at"] = state["last_sent_at"]
 
-    if nb_sev == old_nb_sev and sb_sev == old_sb_sev:
-        print("No severity change; skipping.")
+    # If no previous "sent" snapshot, store poll and exit quietly
+    if not prev_sent:
+        _save_raw_state(new_state)
         return
 
-    save_snapshot(current)
+    # Global cool-down to avoid accidental double-sends
+    now_sec = _now_epoch()
+    last_at = int(new_state.get("last_sent_at", 0) or 0)
+    if last_at and (now_sec - last_at) < NOTIFY_MIN_GAP_SEC:
+        _save_raw_state(new_state)
+        return
 
+    if not _should_notify(prev_sent, current):
+        _save_raw_state(new_state)
+        return
+
+    # Build simplified message (delays only)
+    nb_s, sb_s = current["NB"], current["SB"]
     body = (
-        f"🚦 Lions Gate update\n"
-        f"NB: {nb_s['live']}m (base {nb_s['base']} +{nb_s['delay']})\n"
-        f"SB: {sb_s['live']}m (base {sb_s['base']} +{sb_s['delay']})"
+        "🚦 Lions Gate update\n"
+        f"Northbound delay: {nb_s['delay']}m\n"
+        f"Southbound delay: {sb_s['delay']}m"
     )
 
     now_str = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
-
+    notified_any = False
     for u in get_user_settings():
         if not u.get("active", True):
             continue
@@ -452,14 +472,21 @@ def check_and_notify():
         if not within_window(now_str, u["windows"]):
             continue
         sid = send_sms(body, u["phone"])
+        notified_any = True
         print(f"🔔 Sent to {u['phone']}: {sid}")
 
-# ──────────────────── Background scheduler ────────────────────────────────
+    # Mark last_sent regardless to prevent flapping spam
+    if notified_any or True:
+        new_state["last_sent"] = current
+        new_state["last_sent_at"] = now_sec
+
+    _save_raw_state(new_state)
+
+# ── Background poller ─────────────────────────────────────────────────────
 _poll_lock = threading.Lock()
 _poll_started = False
 
 def start_background_polling():
-    """Launch a daemon thread that periodically runs check_and_notify."""
     global _poll_started
     if _poll_started:
         return
@@ -484,7 +511,7 @@ def start_background_polling():
 def _start_polling() -> None:
     start_background_polling()
 
-# ──────────────────── SMS Webhook helpers ──────────────────────────────────
+# ── SMS helpers ────────────────────────────────────────────────────────────
 def parse_windows(s: str):
     parts = [p.strip() for p in s.split(",") if p.strip()]
     if len(parts) > 2:
@@ -502,15 +529,22 @@ def parse_windows(s: str):
         windows.append({"start": start, "end": end})
     return windows
 
-# ──────────────────── Routes ───────────────────────────────────────────────
+# ── Routes ─────────────────────────────────────────────────────────────────
 @app.route("/", methods=["GET"])
 def health():
     return "ok", 200
 
 @app.route("/api/status", methods=["GET"])
 def status():
-    snap = load_snapshot()
-    return jsonify(snap if snap else {"msg": "no data yet"})
+    state = _load_raw_state()
+    if not state:
+        return jsonify({"msg": "no data yet"})
+    # Back-compat: if state already NB/SB at top, return it; else return the latest poll
+    if "NB" in state and "SB" in state:
+        return jsonify(state)
+    if "poll" in state:
+        return jsonify(state["poll"])
+    return jsonify(state)
 
 @app.route("/api/signup", methods=["POST"])
 def signup():
@@ -536,7 +570,6 @@ def signup():
     save_user_settings(users)
     return {"msg": "registered"}, 201
 
-# ---- OTP: start (send code) -----------------------------------------------
 @app.route("/api/otp/start", methods=["POST"])
 def otp_start():
     data = request.get_json(silent=True) or {}
@@ -546,22 +579,19 @@ def otp_start():
     try:
         phone = normalize_phone(raw)
     except ValueError:
-        # Always respond 200 to avoid number enumeration
         return jsonify({"ok": True, "status": "sent"}), 200
 
-    # Only send OTP for registered numbers
     if not any(u["phone"] == phone for u in get_user_settings()):
         return jsonify({"ok": True, "status": "sent"}), 200
 
-    ok, status = otp_issue_and_send(phone)
-    if not ok and status == "cooldown":
+    ok, status2 = otp_issue_and_send(phone)
+    if not ok and status2 == "cooldown":
         return jsonify({"ok": True, "status": "cooldown"}), 200
-    if not ok and status == "too_many_attempts":
+    if not ok and status2 == "too_many_attempts":
         return jsonify({"ok": False, "error": "locked"}), 429
 
     return jsonify({"ok": True, "status": "sent"}), 200
 
-# ---- OTP: verify -----------------------------------------------------------
 @app.route("/api/otp/verify", methods=["POST"])
 def otp_verify():
     data = request.get_json(silent=True) or {}
@@ -585,7 +615,6 @@ def otp_verify():
         resp["expires_in"] = JWT_TTL_MIN * 60
     return jsonify(resp), 200
 
-# ---- User settings (requires JWT) -----------------------------------------
 @app.route("/api/user/settings", methods=["GET", "POST"])
 def user_settings_api():
     phone = _phone_from_request(request)
@@ -616,13 +645,9 @@ def user_settings_api():
     save_user_settings(users)
     return jsonify({"ok": True, "settings": user}), 200
 
-# ---- Twilio inbound SMS (signature-verified) ------------------------------
 @app.route("/sms", methods=["POST"], strict_slashes=False)
 def sms_webhook():
     if TWILIO_VALIDATE and not _twilio_signature_ok(request):
-        print("⚠️ Twilio signature failed",
-              _twilio_request_url(request),
-              "XFP=", request.headers.get("X-Forwarded-Proto"))
         return Response("Forbidden", status=403)
 
     from_number = request.form.get("From", "").strip()
@@ -649,10 +674,11 @@ def sms_webhook():
         try:
             delays = get_delays()
             nb, sb = delays["NB"], delays["SB"]
-            nb_sev, sb_sev = severity_level(nb["delay"]), severity_level(sb["delay"])
+            # Simplified STATUS text (header + delays only)
             msg = (
-                f"{SEV_EMOJI[nb_sev]} NB {nb['delay']}m (base {nb['base']})\n"
-                f"{SEV_EMOJI[sb_sev]} SB {sb['delay']}m (base {sb['base']})"
+                "🚦 Lions Gate update\n"
+                f"Northbound delay: {nb['delay']}m\n"
+                f"Southbound delay: {sb['delay']}m"
             )
         except Exception:
             msg = "⚠️ Couldn’t fetch delay right now."
@@ -678,7 +704,7 @@ def sms_webhook():
 
     return Response(str(resp), mimetype="application/xml")
 
-# ──────────────────── Entrypoint ───────────────────────────────────────────
+# ── Entrypoint ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BridgeDelay monitor")
     parser.add_argument("--poll", action="store_true", help="Run delay check loop every 5 minutes")
