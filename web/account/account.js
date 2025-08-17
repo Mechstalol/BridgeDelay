@@ -1,3 +1,4 @@
+const API_BASE = "https://bridge-delay-app-d4cfc5ercda0gqbk.westus2-01.azurewebsites.net";
 const token = localStorage.getItem('token');
 if (!token) {
   window.location.href = '../login/login.html';
@@ -7,7 +8,7 @@ const statusEl = document.getElementById('settings-status');
 const form = document.getElementById('settings-form');
 
 async function loadSettings() {
-  const res = await fetch('/api/user/settings', {
+  const res = await fetch(`${API_BASE}/api/user/settings`, {
     headers: { 'Authorization': 'Bearer ' + token }
   });
   if (res.ok) {
@@ -27,7 +28,7 @@ form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const threshold = parseInt(document.getElementById('threshold').value, 10) || 0;
   const windows = document.getElementById('windows').value.trim();
-  const res = await fetch('/api/user/settings', {
+  const res = await fetch(`${API_BASE}/api/user/settings`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

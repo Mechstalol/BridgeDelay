@@ -1,3 +1,4 @@
+const API_BASE = "https://bridge-delay-app-d4cfc5ercda0gqbk.westus2-01.azurewebsites.net";
 const phoneForm = document.getElementById('phone-form');
 const codeForm = document.getElementById('code-form');
 const statusEl = document.getElementById('login-status');
@@ -5,7 +6,7 @@ const statusEl = document.getElementById('login-status');
 phoneForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const phone = document.getElementById('phone').value.trim();
-  const res = await fetch('/api/otp/start', {
+  const res = await fetch(`${API_BASE}/api/otp/start`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({phone})
@@ -24,7 +25,7 @@ codeForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const phone = document.getElementById('phone').value.trim();
   const code = document.getElementById('code').value.trim();
-  const res = await fetch('/api/otp/verify', {
+  const res = await fetch(`${API_BASE}/api/otp/verify`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({phone, code})
