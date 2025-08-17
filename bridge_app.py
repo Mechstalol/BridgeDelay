@@ -7,7 +7,7 @@ Notify when severity changes OR delay jump ≥ NOTIFY_MIN_STEP minutes.
 Message shows only delays (no base/live).
 
 New SMS commands:
-  PAUSE           -> pause alerts for 1 hour
+  PAUSE [minutes] -> pause alerts (default 60m)
   DEACTIVATE      -> turn off alerts until reactivated
   REACTIVATE      -> turn alerts back on
 
@@ -104,7 +104,7 @@ OTP_RESEND_COOLDOWN  = 60
 OTP_MAX_ATTEMPTS     = 6
 OTP_LOCK_MIN         = 10
 
-# Twilio security (signature verification)
+# Twilio security (signature verification; set TWILIO_VALIDATE=0 to disable)
 TWILIO_VALIDATE = os.getenv("TWILIO_VALIDATE", "1").lower() not in ("0", "false", "no")
 
 # Google Routes API
@@ -195,6 +195,24 @@ def _phone_from_request(req) -> str | None:
     except Exception:
         return None
 
+# ──────────────────── Twilio signature helpers ─────────────────────────────
+def _twilio_request_url(req):
+    url = req.url
+    xf_proto = req.headers.get("X-Forwarded-Proto", "")
+    if xf_proto and url.startswith("http://") and xf_proto == "https":
+        url = "https://" + url[len("http://"):]
+    return url
+
+def _twilio_signature_ok(req):
+    sig = req.headers.get("X-Twilio-Signature", "")
+    validator = RequestValidator(AUTH_TOKEN or "")
+    url = _twilio_request_url(req)
+    if validator.validate(url, req.form, sig):
+        return True
+    # some proxies trim/add trailing slash, check alternative
+    alt = url.rstrip("/") if url.endswith("/") else url + "/"
+    return validator.validate(alt, req.form, sig)
+
 # ──────────────────── Google delays ────────────────────────────────────────
 def _latlng(pair):
     lat, lng = pair
@@ -273,31 +291,28 @@ def save_user_settings(settings: List[Dict[str, Any]]):
 def get_user_settings():
     return load_user_settings()
 
+def ensure_user_exists(phone_e164: str, active: bool = False) -> Dict[str, Any]:
+    users = load_user_settings()
+    user = next((u for u in users if u["phone"] == phone_e164), None)
+    if not user:
+        user = {
+            "phone": phone_e164,
+            "active": active,
+            "threshold": DEFAULT_THRESHOLD,
+            "windows": DEFAULT_WINDOWS,
+            "pausedUntil": 0,
+        }
+        users.append(user)
+        save_user_settings(users)
+    return user
+
 # ──────────────────── Twilio helpers ───────────────────────────────────────
 def send_sms(body: str, to: str) -> str:
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
     msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
     return msg.sid
 
-def _twilio_request_url(req):
-    url = req.url
-    xf_proto = req.headers.get("X-Forwarded-Proto", "")
-    if xf_proto and url.startswith("http://") and xf_proto == "https":
-        url = "https://" + url[len("http://"):]
-    return url
-
-def _twilio_signature_ok(req):
-    sig = req.headers.get("X-Twilio-Signature", "")
-    validator = RequestValidator(AUTH_TOKEN or "")
-    url = _twilio_request_url(req)
-    if validator.validate(url, req.form, sig):
-        return True
-    alt = url.rstrip("/") if url.endswith("/") else url + "/"
-    return validator.validate(alt, req.form, sig)
-
 # ──────────────────── OTP (Azure Table) ────────────────────────────────────
-OTP_TABLE  # (kept; omitted here to save space — unchanged OTP helpers)  # noqa
-
 def _hash_code(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
@@ -418,9 +433,13 @@ def _state_get_with_etag(tc):
     try:
         ent = tc.get_entity(partition_key="state", row_key="latest")
         data = json.loads(ent.get("data", "{}") or "{}")
-        etag = ent.get("_etag") or ent.get("etag") or getattr(ent, "etag", None) \
-               or ent.get("odata.etag") or ent.get("@odata.etag") \
-               or (getattr(ent, "metadata", {}) or {}).get("etag")
+        # Azure SDK exposes etag differently depending on version
+        etag = (ent.get("_etag")
+                or ent.get("etag")
+                or getattr(ent, "etag", None)
+                or ent.get("odata.etag")
+                or ent.get("@odata.etag")
+                or (getattr(ent, "metadata", {}) or {}).get("etag"))
         return data, etag
     except ResourceNotFoundError:
         init = {"poll": {}, "last_sent": None, "last_sent_at": 0}
@@ -443,19 +462,19 @@ def _state_replace_if_match(tc, etag: str | None, new_state: Dict[str, Any]) -> 
 # ──────────────────── Core poller with de-dupe ─────────────────────────────
 def check_and_notify():
     tc = _get_table_client(STATE_TABLE)
+    current = get_delays()
+
     if not tc:
-        # Single-instance fallback
-        current = get_delays()
+        # Single-instance fallback (file-based)
         try:
             with open(STATE_FILE, "r") as f:
                 state = json.load(f)
         except Exception:
-            state = {}
-        prev_sent = state.get("last_sent") or ({"NB": state.get("NB"), "SB": state.get("SB")} if "NB" in state else None)
+            state = {"poll": {}, "last_sent": None, "last_sent_at": 0}
+        prev_sent = state.get("last_sent")
         state["poll"] = current
         now_sec = int(time.time())
-        last_at = int(state.get("last_sent_at", 0))
-        if prev_sent and ((now_sec - last_at) >= NOTIFY_MIN_GAP_SEC) and _should_notify(prev_sent, current):
+        if prev_sent and ((now_sec - state.get("last_sent_at", 0)) >= NOTIFY_MIN_GAP_SEC) and _should_notify(prev_sent, current):
             state["last_sent"] = current
             state["last_sent_at"] = now_sec
             with open(STATE_FILE, "w") as f:
@@ -466,10 +485,8 @@ def check_and_notify():
                 json.dump(state, f)
         return
 
-    # Normal path with atomic table update
-    current = get_delays()
+    # Atomic path with ETag
     state, etag = _state_get_with_etag(tc)
-
     new_state = dict(state)
     new_state["poll"] = current
 
@@ -488,6 +505,7 @@ def check_and_notify():
     new_state["last_sent"] = current
     new_state["last_sent_at"] = now_sec
     if not _state_replace_if_match(tc, etag, new_state):
+        # another instance won the race
         return
 
     _broadcast_delays(current)
@@ -507,13 +525,16 @@ def _broadcast_delays(current: Dict[str, Dict[str, int]]):
             continue
         if int(u.get("pausedUntil", 0)) > now_sec:
             continue
-        if (nb_s["delay"] < u.get("threshold", DEFAULT_THRESHOLD) and
-            sb_s["delay"] < u.get("threshold", DEFAULT_THRESHOLD)):
+        thr = int(u.get("threshold", DEFAULT_THRESHOLD))
+        if nb_s["delay"] < thr and sb_s["delay"] < thr:
             continue
         if not within_window(now_str, u.get("windows", DEFAULT_WINDOWS)):
             continue
-        sid = send_sms(body, u["phone"])
-        print(f"🔔 Sent to {u['phone']}: {sid}")
+        try:
+            sid = send_sms(body, u["phone"])
+            print(f"🔔 Sent to {u['phone']}: {sid}")
+        except Exception as e:
+            print("Send error:", u["phone"], e)
 
 # ──────────────────── Background poller ────────────────────────────────────
 _poll_lock = threading.Lock()
@@ -557,6 +578,9 @@ def parse_windows(s: str):
             raise ValueError(f"Invalid window: '{part}'")
         windows.append({"start": start, "end": end})
     return windows
+
+def local_now_str() -> str:
+    return datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
 
 # ──────────────────── Routes ───────────────────────────────────────────────
 @app.route("/", methods=["GET"])
@@ -606,6 +630,7 @@ def signup():
     save_user_settings(users)
     return {"msg": "registered"}, 201
 
+# OTP start — auto-create INACTIVE user so brand-new users can login
 @app.route("/api/otp/start", methods=["POST"])
 def otp_start():
     data = request.get_json(silent=True) or {}
@@ -615,9 +640,11 @@ def otp_start():
     try:
         phone = normalize_phone(raw)
     except ValueError:
-        return jsonify({"ok": True, "status": "sent"}), 200
-    if not any(u["phone"] == phone for u in get_user_settings()):
-        return jsonify({"ok": True, "status": "sent"}), 200
+        return jsonify({"ok": True, "status": "sent"}), 200  # don't leak validity
+
+    # ensure a row exists (inactive until they verify)
+    ensure_user_exists(phone, active=False)
+
     ok, status2 = otp_issue_and_send(phone)
     if not ok and status2 == "cooldown":
         return jsonify({"ok": True, "status": "cooldown"}), 200
@@ -625,6 +652,7 @@ def otp_start():
         return jsonify({"ok": False, "error": "locked"}), 429
     return jsonify({"ok": True, "status": "sent"}), 200
 
+# OTP verify — activate on success, return JWT if configured
 @app.route("/api/otp/verify", methods=["POST"])
 def otp_verify():
     data = request.get_json(silent=True) or {}
@@ -638,6 +666,16 @@ def otp_verify():
         abort(400, "invalid phone")
     if not otp_verify_and_consume(phone, code):
         return jsonify({"ok": False, "error": "invalid_or_expired"}), 401
+
+    # activate user
+    users = get_user_settings()
+    for u in users:
+        if u["phone"] == phone:
+            u["active"] = True
+            u["pausedUntil"] = 0
+            break
+    save_user_settings(users)
+
     token = _jwt_for_phone(phone)
     resp = {"ok": True}
     if token:
@@ -689,45 +727,43 @@ def sms_webhook():
     from_number = request.form.get("From", "").strip()
     if not from_number:
         abort(400)
-
     body_raw = request.form.get("Body", "").strip()
-    parts    = body_raw.upper().split(maxsplit=1) if body_raw else ["HELP"]
+    parts    = body_raw.split(maxsplit=1) if body_raw else ["HELP"]
+    cmd = parts[0].upper()
+    arg = parts[1].strip() if len(parts) == 2 else ""
 
     users = get_user_settings()
     user  = next((u for u in users if u["phone"] == from_number), None)
     if not user:
-        user = {
-            "phone": from_number,
-            "active": True,
-            "threshold": DEFAULT_THRESHOLD,
-            "windows": DEFAULT_WINDOWS,
-            "pausedUntil": 0,
-        }
-        users.append(user)
+        user = ensure_user_exists(from_number, active=True)
+        users = get_user_settings()
 
     resp = MessagingResponse()
     now_sec = int(time.time())
 
-    if parts[0] == "PAUSE":
-        user["pausedUntil"] = now_sec + 3600  # 1 hour
+    if cmd == "PAUSE":
+        mins = 60
+        if arg.isdigit():
+            mins = max(1, min(1440, int(arg)))
+        user["pausedUntil"] = now_sec + mins * 60
         save_user_settings(users)
-        resp.message("⏸️ Paused for 1 hour. Send REACTIVATE to resume sooner.")
+        resp.message(f"⏸️ Paused for {mins} minutes. Send REACTIVATE to resume early.")
         return Response(str(resp), mimetype="application/xml")
 
-    if parts[0] == "DEACTIVATE":
+    if cmd in ("DEACTIVATE", "OFF", "STOP"):
         user["active"] = False
         save_user_settings(users)
         resp.message("🔕 Alerts deactivated. Send REACTIVATE to turn them back on.")
         return Response(str(resp), mimetype="application/xml")
 
-    if parts[0] == "REACTIVATE":
+    if cmd in ("REACTIVATE", "ACTIVATE", "ON", "START"):
         user["active"] = True
         user["pausedUntil"] = 0
         save_user_settings(users)
         resp.message("🔔 Alerts reactivated.")
         return Response(str(resp), mimetype="application/xml")
 
-    if parts[0] == "STATUS":
+    if cmd == "STATUS":
         try:
             delays = get_delays()
             nb, sb = delays["NB"], delays["SB"]
@@ -741,20 +777,27 @@ def sms_webhook():
         resp.message(msg)
         return Response(str(resp), mimetype="application/xml")
 
-    if parts[0] == "THRESHOLD" and len(parts) == 2 and parts[1].isdigit():
-        user["threshold"] = int(parts[1])
+    if cmd == "THRESHOLD" and arg.isdigit():
+        user["threshold"] = int(arg)
         save_user_settings(users)
-        resp.message(f"✅ Threshold set to {parts[1]} minutes.")
-    elif parts[0] == "WINDOW" and len(parts) == 2:
+        resp.message(f"✅ Threshold set to {arg} minutes.")
+    elif cmd == "WINDOW" and arg:
         try:
-            user["windows"] = parse_windows(parts[1])
+            user["windows"] = parse_windows(arg)
             save_user_settings(users)
             win_str = ", ".join(f"{w['start']}-{w['end']}" for w in user["windows"])
             resp.message(f"✅ Windows set to {win_str}")
         except ValueError:
-            resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]")
-    elif parts[0] in ("LIST", "HELP"):
-        resp.message("Commands: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM] | PAUSE | DEACTIVATE | REACTIVATE")
+            resp.message("❌ Use: WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]")
+    elif cmd in ("LIST", "HELP"):
+        resp.message(
+            "Commands:\n"
+            "STATUS\n"
+            "THRESHOLD n\n"
+            "WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]\n"
+            "PAUSE [minutes]\n"
+            "DEACTIVATE | REACTIVATE"
+        )
     else:
         resp.message("Unknown command. Send HELP for options.")
 
@@ -763,7 +806,7 @@ def sms_webhook():
 # ──────────────────── Entrypoint ───────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BridgeDelay monitor")
-    parser.add_argument("--poll", action="store_true", help="Run delay check loop every 5 minutes")
+    parser.add_argument("--poll", action="store_true", help="Run delay check loop every POLL_INTERVAL seconds")
     args = parser.parse_args()
 
     if args.poll:
@@ -772,4 +815,4 @@ if __name__ == "__main__":
                 check_and_notify()
             except Exception as e:
                 print("Polling error:", e)
-            time.sleep(300)
+            time.sleep(POLL_INTERVAL)
