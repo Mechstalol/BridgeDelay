@@ -83,8 +83,10 @@ ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
 FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
 
+# Prefer connection string; MI fallback; or force file storage.
 TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")  # https://<acct>.table.core.windows.net
 AZURE_CONN      = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+FORCE_FILE_STORAGE = os.getenv("FORCE_FILE_STORAGE", "0").lower() in ("1", "true", "yes")
 
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))
 ENABLE_POLLING = os.getenv("ENABLE_POLLING", "1").lower() not in ("0", "false", "no")
@@ -138,13 +140,18 @@ DEFAULT_WINDOWS   = [{"start": "06:00", "end": "09:00"},
 
 SEV_EMOJI = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
 
-# ──────────────────── Azure Table helpers ──────────────────────────────────
+# ──────────────────── Azure Table helpers (robust) ─────────────────────────
 def _get_table_service():
-    if TABLES_ENDPOINT:
-        cred = DefaultAzureCredential()
-        return TableServiceClient(endpoint=TABLES_ENDPOINT, credential=cred)
-    if AZURE_CONN:
-        return TableServiceClient.from_connection_string(AZURE_CONN)
+    if FORCE_FILE_STORAGE:
+        return None
+    try:
+        if AZURE_CONN:  # prefer connection string if present
+            return TableServiceClient.from_connection_string(AZURE_CONN)
+        if TABLES_ENDPOINT:
+            cred = DefaultAzureCredential()
+            return TableServiceClient(endpoint=TABLES_ENDPOINT, credential=cred)
+    except Exception as e:
+        print("TableService init error:", e)
     return None
 
 def _get_table_client(name: str):
@@ -153,9 +160,10 @@ def _get_table_client(name: str):
         return None
     try:
         svc.create_table_if_not_exists(name)
-    except Exception:
-        pass
-    return svc.get_table_client(name)
+        return svc.get_table_client(name)
+    except Exception as e:
+        print(f"TableClient error for {name}:", e)
+        return None
 
 # ──────────────────── Phone/JWT helpers ────────────────────────────────────
 def normalize_phone(raw: str) -> str:
@@ -204,14 +212,19 @@ def _twilio_request_url(req):
     return url
 
 def _twilio_signature_ok(req):
-    sig = req.headers.get("X-Twilio-Signature", "")
-    validator = RequestValidator(AUTH_TOKEN or "")
-    url = _twilio_request_url(req)
-    if validator.validate(url, req.form, sig):
+    if not TWILIO_VALIDATE:
         return True
-    # some proxies trim/add trailing slash, check alternative
-    alt = url.rstrip("/") if url.endswith("/") else url + "/"
-    return validator.validate(alt, req.form, sig)
+    try:
+        sig = req.headers.get("X-Twilio-Signature", "")
+        validator = RequestValidator(AUTH_TOKEN or "")
+        url = _twilio_request_url(req)
+        if validator.validate(url, req.form, sig):
+            return True
+        alt = url.rstrip("/") if url.endswith("/") else url + "/"
+        return validator.validate(alt, req.form, sig)
+    except Exception as e:
+        print("Twilio signature check error:", e)
+        return False
 
 # ──────────────────── Google delays ────────────────────────────────────────
 def _latlng(pair):
@@ -253,40 +266,51 @@ def get_delays() -> Dict[str, Dict[str, int]]:
 def load_user_settings() -> List[Dict[str, Any]]:
     tc = _get_table_client(USER_TABLE)
     if tc:
-        users: List[Dict[str, Any]] = []
-        for ent in tc.query_entities("PartitionKey eq 'user'"):
-            users.append(
-                {
-                    "phone": ent["RowKey"],
-                    "active": bool(ent.get("active", True)),
-                    "threshold": int(ent.get("threshold", DEFAULT_THRESHOLD)),
-                    "windows": json.loads(ent.get("windows", json.dumps(DEFAULT_WINDOWS))),
-                    "pausedUntil": int(ent.get("pausedUntil", 0)),
-                }
-            )
-        return users
+        try:
+            users: List[Dict[str, Any]] = []
+            for ent in tc.query_entities("PartitionKey eq 'user'"):
+                users.append(
+                    {
+                        "phone": ent["RowKey"],
+                        "active": bool(ent.get("active", True)),
+                        "threshold": int(ent.get("threshold", DEFAULT_THRESHOLD)),
+                        "windows": json.loads(ent.get("windows", json.dumps(DEFAULT_WINDOWS))),
+                        "pausedUntil": int(ent.get("pausedUntil", 0)),
+                    }
+                )
+            return users
+        except Exception as e:
+            print("load_user_settings Azure error:", e)
+    # file fallback
     try:
         with open(USER_SETTINGS_FILE, "r") as f:
             return json.load(f)
-    except FileNotFoundError:
+    except Exception:
         return []
 
 def save_user_settings(settings: List[Dict[str, Any]]):
     tc = _get_table_client(USER_TABLE)
     if tc:
-        for u in settings:
-            ent = {
-                "PartitionKey": "user",
-                "RowKey": u["phone"],
-                "active": u.get("active", True),
-                "threshold": u.get("threshold", DEFAULT_THRESHOLD),
-                "windows": json.dumps(u.get("windows", DEFAULT_WINDOWS)),
-                "pausedUntil": int(u.get("pausedUntil", 0)),
-            }
-            tc.upsert_entity(ent)
-        return
-    with open(USER_SETTINGS_FILE, "w") as f:
-        json.dump(settings, f, indent=2)
+        try:
+            for u in settings:
+                ent = {
+                    "PartitionKey": "user",
+                    "RowKey": u["phone"],
+                    "active": u.get("active", True),
+                    "threshold": u.get("threshold", DEFAULT_THRESHOLD),
+                    "windows": json.dumps(u.get("windows", DEFAULT_WINDOWS)),
+                    "pausedUntil": int(u.get("pausedUntil", 0)),
+                }
+                tc.upsert_entity(ent)
+            return
+        except Exception as e:
+            print("save_user_settings Azure error:", e)
+    # file fallback
+    try:
+        with open(USER_SETTINGS_FILE, "w") as f:
+            json.dump(settings, f, indent=2)
+    except Exception as e:
+        print("save_user_settings file error:", e)
 
 def get_user_settings():
     return load_user_settings()
@@ -362,9 +386,13 @@ def otp_issue_and_send(phone_e164: str):
         "lastSentAt": now,
         "lockedUntil": 0,
     }
-    _otp_table().upsert_entity(entity)
-    send_sms(f"Your NorthVanUpdates code: {code}. Expires in 5 minutes.", phone_e164)
-    return True, "sent"
+    try:
+        _otp_table().upsert_entity(entity)
+        send_sms(f"Your NorthVanUpdates code: {code}. Expires in 5 minutes.", phone_e164)
+        return True, "sent"
+    except Exception as e:
+        print("otp_issue Azure error:", e)
+        return False, "error"
 
 def otp_verify_and_consume(phone_e164: str, code: str) -> bool:
     tc = _otp_table()
@@ -381,22 +409,26 @@ def otp_verify_and_consume(phone_e164: str, code: str) -> bool:
     if otp_locked(ent):
         return False
 
-    if now > int(ent.get("expiresAt", 0)):
-        ent["attempts"] = attempts + 1
-        if ent["attempts"] >= OTP_MAX_ATTEMPTS:
-            ent["lockedUntil"] = now + OTP_LOCK_MIN * 60
-        tc.upsert_entity(ent)
-        return False
+    try:
+        if now > int(ent.get("expiresAt", 0)):
+            ent["attempts"] = attempts + 1
+            if ent["attempts"] >= OTP_MAX_ATTEMPTS:
+                ent["lockedUntil"] = now + OTP_LOCK_MIN * 60
+            tc.upsert_entity(ent)
+            return False
 
-    if _hash_code(code) != ent.get("codeHash"):
-        ent["attempts"] = attempts + 1
-        if ent["attempts"] >= OTP_MAX_ATTEMPTS:
-            ent["lockedUntil"] = now + OTP_LOCK_MIN * 60
-        tc.upsert_entity(ent)
-        return False
+        if _hash_code(code) != ent.get("codeHash"):
+            ent["attempts"] = attempts + 1
+            if ent["attempts"] >= OTP_MAX_ATTEMPTS:
+                ent["lockedUntil"] = now + OTP_LOCK_MIN * 60
+            tc.upsert_entity(ent)
+            return False
 
-    tc.delete_entity(partition_key="otp", row_key=phone_e164)
-    return True
+        tc.delete_entity(partition_key="otp", row_key=phone_e164)
+        return True
+    except Exception as e:
+        print("otp_verify Azure error:", e)
+        return False
 
 # ──────────────────── Alert rules ──────────────────────────────────────────
 def severity_level(delay: int) -> int:
@@ -433,7 +465,6 @@ def _state_get_with_etag(tc):
     try:
         ent = tc.get_entity(partition_key="state", row_key="latest")
         data = json.loads(ent.get("data", "{}") or "{}")
-        # Azure SDK exposes etag differently depending on version
         etag = (ent.get("_etag")
                 or ent.get("etag")
                 or getattr(ent, "etag", None)
@@ -461,9 +492,9 @@ def _state_replace_if_match(tc, etag: str | None, new_state: Dict[str, Any]) -> 
 
 # ──────────────────── Core poller with de-dupe ─────────────────────────────
 def check_and_notify():
-    tc = _get_table_client(STATE_TABLE)
     current = get_delays()
 
+    tc = _get_table_client(STATE_TABLE)
     if not tc:
         # Single-instance fallback (file-based)
         try:
@@ -477,16 +508,51 @@ def check_and_notify():
         if prev_sent and ((now_sec - state.get("last_sent_at", 0)) >= NOTIFY_MIN_GAP_SEC) and _should_notify(prev_sent, current):
             state["last_sent"] = current
             state["last_sent_at"] = now_sec
-            with open(STATE_FILE, "w") as f:
-                json.dump(state, f)
+            try:
+                with open(STATE_FILE, "w") as f:
+                    json.dump(state, f)
+            except Exception as e:
+                print("STATE_FILE write error:", e)
             _broadcast_delays(current)
         else:
-            with open(STATE_FILE, "w") as f:
-                json.dump(state, f)
+            try:
+                with open(STATE_FILE, "w") as f:
+                    json.dump(state, f)
+            except Exception as e:
+                print("STATE_FILE write error:", e)
         return
 
-    # Atomic path with ETag
-    state, etag = _state_get_with_etag(tc)
+    # Atomic path with ETag (guard against auth errors)
+    try:
+        state, etag = _state_get_with_etag(tc)
+    except Exception as e:
+        print("state table read error, falling back to file:", e)
+        # behave like file fallback
+        try:
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+        except Exception:
+            state = {"poll": {}, "last_sent": None, "last_sent_at": 0}
+        prev_sent = state.get("last_sent")
+        state["poll"] = current
+        now_sec = int(time.time())
+        if prev_sent and ((now_sec - state.get("last_sent_at", 0)) >= NOTIFY_MIN_GAP_SEC) and _should_notify(prev_sent, current):
+            state["last_sent"] = current
+            state["last_sent_at"] = now_sec
+            try:
+                with open(STATE_FILE, "w") as f:
+                    json.dump(state, f)
+            except Exception as e2:
+                print("STATE_FILE write error:", e2)
+            _broadcast_delays(current)
+        else:
+            try:
+                with open(STATE_FILE, "w") as f:
+                    json.dump(state, f)
+            except Exception as e2:
+                print("STATE_FILE write error:", e2)
+        return
+
     new_state = dict(state)
     new_state["poll"] = current
 
@@ -499,14 +565,21 @@ def check_and_notify():
         should = True
 
     if not should:
-        tc.upsert_entity({"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(new_state)})
+        try:
+            tc.upsert_entity({"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(new_state)})
+        except Exception as e:
+            print("state table upsert (poll only) error:", e)
         return
 
     new_state["last_sent"] = current
     new_state["last_sent_at"] = now_sec
-    if not _state_replace_if_match(tc, etag, new_state):
-        # another instance won the race
-        return
+    try:
+        ok = _state_replace_if_match(tc, etag, new_state)
+    except Exception as e:
+        print("state table replace error:", e)
+        ok = False
+    if not ok:
+        return  # another instance won, or write failed
 
     _broadcast_delays(current)
 
@@ -521,20 +594,20 @@ def _broadcast_delays(current: Dict[str, Dict[str, int]]):
     now_sec = int(time.time())
 
     for u in get_user_settings():
-        if not u.get("active", True):
-            continue
-        if int(u.get("pausedUntil", 0)) > now_sec:
-            continue
-        thr = int(u.get("threshold", DEFAULT_THRESHOLD))
-        if nb_s["delay"] < thr and sb_s["delay"] < thr:
-            continue
-        if not within_window(now_str, u.get("windows", DEFAULT_WINDOWS)):
-            continue
         try:
+            if not u.get("active", True):
+                continue
+            if int(u.get("pausedUntil", 0)) > now_sec:
+                continue
+            thr = int(u.get("threshold", DEFAULT_THRESHOLD))
+            if nb_s["delay"] < thr and sb_s["delay"] < thr:
+                continue
+            if not within_window(now_str, u.get("windows", DEFAULT_WINDOWS)):
+                continue
             sid = send_sms(body, u["phone"])
             print(f"🔔 Sent to {u['phone']}: {sid}")
         except Exception as e:
-            print("Send error:", u["phone"], e)
+            print("Send/user filter error:", u.get("phone"), e)
 
 # ──────────────────── Background poller ────────────────────────────────────
 _poll_lock = threading.Lock()
@@ -599,6 +672,10 @@ def status():
             return jsonify(data)
         except ResourceNotFoundError:
             return jsonify({"msg": "no data yet"})
+        except Exception as e:
+            print("/api/status Azure error:", e)
+            # fall through to file below
+
     try:
         with open(STATE_FILE, "r") as f:
             return jsonify(json.load(f))
@@ -642,7 +719,6 @@ def otp_start():
     except ValueError:
         return jsonify({"ok": True, "status": "sent"}), 200  # don't leak validity
 
-    # ensure a row exists (inactive until they verify)
     ensure_user_exists(phone, active=False)
 
     ok, status2 = otp_issue_and_send(phone)
@@ -650,6 +726,8 @@ def otp_start():
         return jsonify({"ok": True, "status": "cooldown"}), 200
     if not ok and status2 == "too_many_attempts":
         return jsonify({"ok": False, "error": "locked"}), 429
+    if not ok:
+        return jsonify({"ok": False, "error": "server"}), 500
     return jsonify({"ok": True, "status": "sent"}), 200
 
 # OTP verify — activate on success, return JWT if configured
@@ -667,7 +745,6 @@ def otp_verify():
     if not otp_verify_and_consume(phone, code):
         return jsonify({"ok": False, "error": "invalid_or_expired"}), 401
 
-    # activate user
     users = get_user_settings()
     for u in users:
         if u["phone"] == phone:
@@ -721,7 +798,7 @@ def user_settings_api():
 
 @app.route("/sms", methods=["POST"], strict_slashes=False)
 def sms_webhook():
-    if TWILIO_VALIDATE and not _twilio_signature_ok(request):
+    if not _twilio_signature_ok(request):
         return Response("Forbidden", status=403)
 
     from_number = request.form.get("From", "").strip()
