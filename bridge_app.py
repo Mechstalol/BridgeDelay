@@ -3,9 +3,8 @@
 BridgeDelay — unified Maps-API + SMS webhook (+ OTP login)
 ----------------------------------------------------------
 Azure-only (no local file fallbacks).
-CORS fixed for all /api/* endpoints.
-Import-safe fallbacks for flask_cors.cross_origin and azure.core.match_conditions.MatchConditions.
-De-dupe via ETag in STATE_TABLE.
+CORS fixed for all /api/* endpoints (OPTIONS + response headers).
+No ETag compare-and-swap (works with Cosmos Table + classic Table).
 Notify when severity changes OR delay jump ≥ NOTIFY_MIN_STEP minutes.
 Message shows only delays (no base/live).
 """
@@ -31,7 +30,6 @@ try:
     from flask_cors import CORS, cross_origin
 except Exception:  # very old Flask-Cors
     from flask_cors import CORS  # type: ignore
-
     def cross_origin(*_a, **_k):  # no-op decorator
         def _wrap(fn):
             return fn
@@ -43,14 +41,7 @@ from twilio.request_validator import RequestValidator
 
 from azure.identity import DefaultAzureCredential
 from azure.data.tables import TableServiceClient
-from azure.core.exceptions import ResourceNotFoundError, ResourceModifiedError
-
-# --- azure.core.match_conditions (safe fallback) ---------------------------
-try:
-    from azure.core.match_conditions import MatchConditions  # type: ignore
-except Exception:
-    class MatchConditions:  # type: ignore
-        IfNotModified = "IfNotModified"
+from azure.core.exceptions import ResourceNotFoundError
 
 from zoneinfo import ZoneInfo
 
@@ -402,59 +393,46 @@ def _should_notify(prev_sent: Dict[str, Any], current: Dict[str, Any]) -> bool:
     )
     return sev_changed or big_move
 
-# ──────────────────── State entity (atomic update) ─────────────────────────
-def _state_get_with_etag(tc):
+# ──────────────────── State helpers (no ETag) ──────────────────────────────
+def _state_load(tc):
+    """Return dict state (creates skeleton on first run)."""
     try:
         ent = tc.get_entity(partition_key="state", row_key="latest")
-        data = json.loads(ent.get("data", "{}") or "{}")
-        etag = ent.get("_etag") or ent.get("etag") or getattr(ent, "etag", None) \
-               or ent.get("odata.etag") or ent.get("@odata.etag") \
-               or (getattr(ent, "metadata", {}) or {}).get("etag")
-        return data, etag
+        return json.loads(ent.get("data", "{}") or "{}")
     except ResourceNotFoundError:
         init = {"poll": {}, "last_sent": None, "last_sent_at": 0}
         tc.upsert_entity({"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(init)})
-        return init, None
+        return init
 
-def _state_replace_if_match(tc, etag: str | None, new_state: Dict[str, Any]) -> bool:
-    entity = {"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(new_state)}
-    try:
-        if etag:
-            tc.update_entity(entity=entity, mode="Replace", etag=etag,
-                             match_condition=MatchConditions.IfNotModified)
-        else:
-            tc.upsert_entity(entity)
-        return True
-    except ResourceModifiedError:
-        return False
+def _state_save(tc, state: Dict[str, Any]) -> None:
+    tc.upsert_entity({"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(state)})
 
-# ──────────────────── Core poller with de-dupe ─────────────────────────────
+# ──────────────────── Core poller (single-instance safe) ───────────────────
 def check_and_notify():
     tc = _require_table_client(STATE_TABLE)
 
     current = get_delays()
-    state, etag = _state_get_with_etag(tc)
+    state = _state_load(tc)
 
-    new_state = dict(state)
-    new_state["poll"] = current
+    # Always record latest poll
+    state["poll"] = current
+    now_sec = int(time.time())
 
     prev_sent = state.get("last_sent")
-    now_sec = int(time.time())
-    last_at = int(state.get("last_sent_at", 0) or 0)
+    last_at   = int(state.get("last_sent_at", 0) or 0)
 
     should = False
     if prev_sent and (now_sec - last_at) >= NOTIFY_MIN_GAP_SEC and _should_notify(prev_sent, current):
         should = True
 
-    tc.upsert_entity({"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(new_state)})
-
     if not should:
+        _state_save(tc, state)
         return
 
-    new_state["last_sent"] = current
-    new_state["last_sent_at"] = now_sec
-    if not _state_replace_if_match(tc, etag, new_state):
-        return  # another instance won
+    # Save send metadata first, then broadcast
+    state["last_sent"] = current
+    state["last_sent_at"] = now_sec
+    _state_save(tc, state)
 
     _broadcast_delays(current)
 
