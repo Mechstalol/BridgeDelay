@@ -2,14 +2,12 @@
 """
 BridgeDelay — unified Maps-API + SMS webhook (+ OTP login)
 ----------------------------------------------------------
-Only notify when:
-  • severity bucket changes, OR
-  • delay moves by >= NOTIFY_MIN_STEP minutes vs last sent message.
-
-Messages now show only delays (no base/live):
-  🚦 Lions Gate update
-  Northbound delay: Xm
-  Southbound delay: Ym
+Azure-only (no local file fallbacks).
+CORS fixed for all /api/* endpoints.
+Import-safe fallbacks for flask_cors.cross_origin and azure.core.match_conditions.MatchConditions.
+De-dupe via ETag in STATE_TABLE.
+Notify when severity changes OR delay jump ≥ NOTIFY_MIN_STEP minutes.
+Message shows only delays (no base/live).
 """
 
 from __future__ import annotations
@@ -27,20 +25,41 @@ from typing import Any, Dict, List
 
 import requests
 from flask import Flask, request, abort, jsonify, Response
-from flask_cors import CORS
+
+# --- Flask-CORS (safe import with fallback for cross_origin) ---------------
+try:
+    from flask_cors import CORS, cross_origin
+except Exception:  # very old Flask-Cors
+    from flask_cors import CORS  # type: ignore
+
+    def cross_origin(*_a, **_k):  # no-op decorator
+        def _wrap(fn):
+            return fn
+        return _wrap
+
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.request_validator import RequestValidator
 
 from azure.identity import DefaultAzureCredential
 from azure.data.tables import TableServiceClient
+from azure.core.exceptions import ResourceNotFoundError, ResourceModifiedError
+
+# --- azure.core.match_conditions (safe fallback) ---------------------------
+try:
+    from azure.core.match_conditions import MatchConditions  # type: ignore
+except Exception:
+    class MatchConditions:  # type: ignore
+        IfNotModified = "IfNotModified"
+
 from zoneinfo import ZoneInfo
 
 try:
-    import jwt  # PyJWT
+    import jwt  # optional
 except Exception:
     jwt = None
 
+# ──────────────────── Flask & CORS ─────────────────────────────────────────
 app = Flask(__name__)  # gunicorn target → bridge_app:app
 
 ALLOWED_ORIGINS = {
@@ -48,6 +67,7 @@ ALLOWED_ORIGINS = {
     "https://www.northvanupdates.com",
 }
 
+# Global CORS (plus per-route decorators on /api/* endpoints)
 CORS(
     app,
     resources={r"/api/*": {
@@ -55,7 +75,7 @@ CORS(
         "allow_headers": ["Content-Type", "Authorization"],
         "methods": ["GET", "POST", "OPTIONS"],
         "max_age": 600
-    }}
+    }},
 )
 
 @app.after_request
@@ -66,14 +86,19 @@ def add_cors_headers(resp):
             resp.headers["Access-Control-Allow-Origin"] = origin
             resp.headers["Vary"] = "Origin"
         resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, content-type, Authorization"
+        resp.headers["Access-Control-Max-Age"] = "600"
     return resp
 
 @app.route("/api/<path:_any>", methods=["OPTIONS"])
+@cross_origin(origins=list(ALLOWED_ORIGINS),
+              methods=["POST", "GET", "OPTIONS"],
+              allow_headers=["Content-Type", "Authorization", "content-type"],
+              max_age=600)
 def any_api_options(_any):
     return ("", 204)
 
-# ── Config ─────────────────────────────────────────────────────────────────
+# ──────────────────── Config — ENV vars ────────────────────────────────────
 GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
 ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
@@ -88,8 +113,7 @@ ENABLE_POLLING = os.getenv("ENABLE_POLLING", "1").lower() not in ("0", "false", 
 JWT_SECRET  = os.getenv("JWT_SECRET")
 JWT_TTL_MIN = int(os.getenv("JWT_TTL_MIN", "43200"))  # 30 days
 
-# NEW: notify rules
-NOTIFY_MIN_STEP    = int(os.getenv("NOTIFY_MIN_STEP", "5"))   # minutes
+NOTIFY_MIN_STEP    = int(os.getenv("NOTIFY_MIN_STEP", "5"))
 NOTIFY_MIN_GAP_SEC = int(os.getenv("NOTIFY_MIN_GAP_SEC", "60"))
 
 OTP_TABLE            = "userOtp"
@@ -115,14 +139,16 @@ SB_END   = (49.292738, -123.133985)
 NB_BASE_MIN = 9
 SB_BASE_MIN = 4
 
-STATE_FILE         = "last_status.json"
-USER_SETTINGS_FILE = "user_settings.json"
-STATE_TABLE        = "lastStatus"
-USER_TABLE         = "userSettings"
+STATE_TABLE = "lastStatus"
+USER_TABLE  = "userSettings"
+
+DEFAULT_THRESHOLD = 15
+DEFAULT_WINDOWS   = [{"start": "06:00", "end": "09:00"},
+                     {"start": "16:00", "end": "20:00"}]
 
 SEV_EMOJI = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
 
-# ── Helpers: Tables, phones, JWT ───────────────────────────────────────────
+# ──────────────────── Azure Table helpers ──────────────────────────────────
 def _get_table_service():
     if TABLES_ENDPOINT:
         cred = DefaultAzureCredential()
@@ -131,16 +157,17 @@ def _get_table_service():
         return TableServiceClient.from_connection_string(AZURE_CONN)
     return None
 
-def _get_table_client(name: str):
+def _require_table_client(name: str):
     svc = _get_table_service()
     if not svc:
-        return None
+        raise RuntimeError("Azure Table storage not configured: set TABLES_ENDPOINT or AZURE_STORAGE_CONNECTION_STRING")
     try:
         svc.create_table_if_not_exists(name)
     except Exception:
         pass
     return svc.get_table_client(name)
 
+# ──────────────────── Phone/JWT helpers ────────────────────────────────────
 def normalize_phone(raw: str) -> str:
     s = (raw or "").strip()
     if not s:
@@ -158,11 +185,7 @@ def normalize_phone(raw: str) -> str:
 def _jwt_for_phone(phone: str) -> str | None:
     if not (JWT_SECRET and jwt):
         return None
-    payload = {
-        "sub": phone,
-        "iat": int(time.time()),
-        "exp": int(time.time()) + JWT_TTL_MIN * 60,
-    }
+    payload = {"sub": phone, "iat": int(time.time()), "exp": int(time.time()) + JWT_TTL_MIN * 60}
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 def _phone_from_request(req) -> str | None:
@@ -178,7 +201,7 @@ def _phone_from_request(req) -> str | None:
     except Exception:
         return None
 
-# ── Google delay logic (index-safe + staticDuration) ───────────────────────
+# ──────────────────── Google delays ────────────────────────────────────────
 def _latlng(pair):
     lat, lng = pair
     return {"latLng": {"latitude": lat, "longitude": lng}}
@@ -214,79 +237,39 @@ def get_delays() -> Dict[str, Dict[str, int]]:
 
     return {"NB": build(nb, NB_BASE_MIN), "SB": build(sb, SB_BASE_MIN)}
 
-# ── Persistence (state & users) ────────────────────────────────────────────
-def _load_raw_state() -> Dict[str, Any]:
-    tc = _get_table_client(STATE_TABLE)
-    if tc:
-        try:
-            ent = tc.get_entity(partition_key="state", row_key="latest")
-            return json.loads(ent["data"])
-        except Exception:
-            return {}
-    try:
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-def _save_raw_state(state: Dict[str, Any]):
-    tc = _get_table_client(STATE_TABLE)
-    if tc:
-        ent = {"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(state)}
-        tc.upsert_entity(ent)
-        return
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
-
-def _extract_prev_sent(state: Dict[str, Any]) -> Dict[str, Any] | None:
-    # New format: {"poll": {...}, "last_sent": {...}, "last_sent_at": 123}
-    if isinstance(state, dict) and "last_sent" in state and isinstance(state["last_sent"], dict):
-        return state["last_sent"]
-    # Back-compat: old state directly had NB/SB at top
-    if "NB" in state and "SB" in state:
-        return {"NB": state["NB"], "SB": state["SB"]}
-    return None
-
+# ──────────────────── Persistence: users ───────────────────────────────────
 def load_user_settings() -> List[Dict[str, Any]]:
-    tc = _get_table_client(USER_TABLE)
-    if tc:
-        users: List[Dict[str, Any]] = []
-        for ent in tc.query_entities("PartitionKey eq 'user'"):
-            users.append(
-                {
-                    "phone": ent["RowKey"],
-                    "active": bool(ent.get("active", True)),
-                    "threshold": int(ent.get("threshold", 0)),
-                    "windows": json.loads(ent.get("windows", "[]")),
-                }
-            )
-        return users
-    try:
-        with open(USER_SETTINGS_FILE, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return []
+    tc = _require_table_client(USER_TABLE)
+    users: List[Dict[str, Any]] = []
+    for ent in tc.query_entities("PartitionKey eq 'user'"):
+        users.append(
+            {
+                "phone": ent["RowKey"],
+                "active": bool(ent.get("active", True)),
+                "threshold": int(ent.get("threshold", DEFAULT_THRESHOLD)),
+                "windows": json.loads(ent.get("windows", json.dumps(DEFAULT_WINDOWS))),
+                "pausedUntil": int(ent.get("pausedUntil", 0)),
+            }
+        )
+    return users
 
 def save_user_settings(settings: List[Dict[str, Any]]):
-    tc = _get_table_client(USER_TABLE)
-    if tc:
-        for u in settings:
-            ent = {
-                "PartitionKey": "user",
-                "RowKey": u["phone"],
-                "active": u.get("active", True),
-                "threshold": u.get("threshold", 0),
-                "windows": json.dumps(u.get("windows", [])),
-            }
-            tc.upsert_entity(ent)
-        return
-    with open(USER_SETTINGS_FILE, "w") as f:
-        json.dump(settings, f, indent=2)
+    tc = _require_table_client(USER_TABLE)
+    for u in settings:
+        ent = {
+            "PartitionKey": "user",
+            "RowKey": u["phone"],
+            "active": u.get("active", True),
+            "threshold": u.get("threshold", DEFAULT_THRESHOLD),
+            "windows": json.dumps(u.get("windows", DEFAULT_WINDOWS)),
+            "pausedUntil": int(u.get("pausedUntil", 0)),
+        }
+        tc.upsert_entity(ent)
 
 def get_user_settings():
     return load_user_settings()
 
-# ── Twilio helpers ─────────────────────────────────────────────────────────
+# ──────────────────── Twilio helpers ───────────────────────────────────────
 def send_sms(body: str, to: str) -> str:
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
     msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
@@ -308,10 +291,7 @@ def _twilio_signature_ok(req):
     alt = url.rstrip("/") if url.endswith("/") else url + "/"
     return validator.validate(alt, req.form, sig)
 
-# ── OTP (Azure Table) ──────────────────────────────────────────────────────
-def _otp_table():
-    return _get_table_client(OTP_TABLE)
-
+# ──────────────────── OTP (Azure Table) ────────────────────────────────────
 def _hash_code(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
@@ -332,10 +312,11 @@ def otp_locked(ent: Dict[str, Any] | None) -> bool:
         return False
     return _now_epoch() < int(ent.get("lockedUntil", 0))
 
+def _otp_table():
+    return _require_table_client(OTP_TABLE)
+
 def otp_issue_and_send(phone_e164: str):
     tc = _otp_table()
-    if not tc:
-        raise RuntimeError("OTP storage not configured")
     try:
         ent = tc.get_entity(partition_key="otp", row_key=phone_e164)
     except Exception:
@@ -359,14 +340,11 @@ def otp_issue_and_send(phone_e164: str):
         "lockedUntil": 0,
     }
     tc.upsert_entity(entity)
-
     send_sms(f"Your NorthVanUpdates code: {code}. Expires in 5 minutes.", phone_e164)
     return True, "sent"
 
 def otp_verify_and_consume(phone_e164: str, code: str) -> bool:
     tc = _otp_table()
-    if not tc:
-        return False
     try:
         ent = tc.get_entity(partition_key="otp", row_key=phone_e164)
     except Exception:
@@ -395,7 +373,7 @@ def otp_verify_and_consume(phone_e164: str, code: str) -> bool:
     tc.delete_entity(partition_key="otp", row_key=phone_e164)
     return True
 
-# ── Alert logic ────────────────────────────────────────────────────────────
+# ──────────────────── Alert rules ──────────────────────────────────────────
 def severity_level(delay: int) -> int:
     if delay <= 5:
         return 0
@@ -410,12 +388,10 @@ def within_window(now_hhmm: str, windows):
     return any(w["start"] <= now_hhmm <= w["end"] for w in windows)
 
 def _should_notify(prev_sent: Dict[str, Any], current: Dict[str, Any]) -> bool:
-    """True if severity changed OR either NB/SB delay moved by >= NOTIFY_MIN_STEP."""
     if not prev_sent:
         return False
     nb, sb = current["NB"], current["SB"]
     pnb, psb = prev_sent["NB"], prev_sent["SB"]
-
     sev_changed = (
         severity_level(nb["delay"]) != severity_level(pnb["delay"])
         or severity_level(sb["delay"]) != severity_level(psb["delay"])
@@ -426,76 +402,96 @@ def _should_notify(prev_sent: Dict[str, Any], current: Dict[str, Any]) -> bool:
     )
     return sev_changed or big_move
 
+# ──────────────────── State entity (atomic update) ─────────────────────────
+def _state_get_with_etag(tc):
+    try:
+        ent = tc.get_entity(partition_key="state", row_key="latest")
+        data = json.loads(ent.get("data", "{}") or "{}")
+        etag = ent.get("_etag") or ent.get("etag") or getattr(ent, "etag", None) \
+               or ent.get("odata.etag") or ent.get("@odata.etag") \
+               or (getattr(ent, "metadata", {}) or {}).get("etag")
+        return data, etag
+    except ResourceNotFoundError:
+        init = {"poll": {}, "last_sent": None, "last_sent_at": 0}
+        tc.upsert_entity({"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(init)})
+        return init, None
+
+def _state_replace_if_match(tc, etag: str | None, new_state: Dict[str, Any]) -> bool:
+    entity = {"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(new_state)}
+    try:
+        if etag:
+            tc.update_entity(entity=entity, mode="Replace", etag=etag,
+                             match_condition=MatchConditions.IfNotModified)
+        else:
+            tc.upsert_entity(entity)
+        return True
+    except ResourceModifiedError:
+        return False
+
+# ──────────────────── Core poller with de-dupe ─────────────────────────────
 def check_and_notify():
+    tc = _require_table_client(STATE_TABLE)
+
     current = get_delays()
-    state = _load_raw_state() or {}
-    prev_sent = _extract_prev_sent(state)  # None on first run
+    state, etag = _state_get_with_etag(tc)
 
-    # Always record the latest poll (for /api/status)
-    new_state: Dict[str, Any] = {"poll": current}
-    if "last_sent" in state:
-        new_state["last_sent"] = state["last_sent"]
-    if "last_sent_at" in state:
-        new_state["last_sent_at"] = state["last_sent_at"]
+    new_state = dict(state)
+    new_state["poll"] = current
 
-    # If no previous "sent" snapshot, store poll and exit quietly
-    if not prev_sent:
-        _save_raw_state(new_state)
+    prev_sent = state.get("last_sent")
+    now_sec = int(time.time())
+    last_at = int(state.get("last_sent_at", 0) or 0)
+
+    should = False
+    if prev_sent and (now_sec - last_at) >= NOTIFY_MIN_GAP_SEC and _should_notify(prev_sent, current):
+        should = True
+
+    tc.upsert_entity({"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(new_state)})
+
+    if not should:
         return
 
-    # Global cool-down to avoid accidental double-sends
-    now_sec = _now_epoch()
-    last_at = int(new_state.get("last_sent_at", 0) or 0)
-    if last_at and (now_sec - last_at) < NOTIFY_MIN_GAP_SEC:
-        _save_raw_state(new_state)
-        return
+    new_state["last_sent"] = current
+    new_state["last_sent_at"] = now_sec
+    if not _state_replace_if_match(tc, etag, new_state):
+        return  # another instance won
 
-    if not _should_notify(prev_sent, current):
-        _save_raw_state(new_state)
-        return
+    _broadcast_delays(current)
 
-    # Build simplified message (delays only)
+def _broadcast_delays(current: Dict[str, Dict[str, int]]):
     nb_s, sb_s = current["NB"], current["SB"]
     body = (
         "🚦 Lions Gate update\n"
         f"Northbound delay: {nb_s['delay']}m\n"
         f"Southbound delay: {sb_s['delay']}m"
     )
-
     now_str = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
-    notified_any = False
+    now_sec = int(time.time())
+
     for u in get_user_settings():
         if not u.get("active", True):
             continue
-        if (nb_s["delay"] < u["threshold"] and sb_s["delay"] < u["threshold"]):
+        if int(u.get("pausedUntil", 0)) > now_sec:
             continue
-        if not within_window(now_str, u["windows"]):
+        if (nb_s["delay"] < u.get("threshold", DEFAULT_THRESHOLD) and
+            sb_s["delay"] < u.get("threshold", DEFAULT_THRESHOLD)):
+            continue
+        if not within_window(now_str, u.get("windows", DEFAULT_WINDOWS)):
             continue
         sid = send_sms(body, u["phone"])
-        notified_any = True
         print(f"🔔 Sent to {u['phone']}: {sid}")
 
-    # Mark last_sent regardless to prevent flapping spam
-    if notified_any or True:
-        new_state["last_sent"] = current
-        new_state["last_sent_at"] = now_sec
-
-    _save_raw_state(new_state)
-
-# ── Background poller ─────────────────────────────────────────────────────
+# ──────────────────── Background poller ────────────────────────────────────
 _poll_lock = threading.Lock()
 _poll_started = False
-
 def start_background_polling():
     global _poll_started
     if _poll_started:
         return
     _poll_started = True
-
     if not ENABLE_POLLING or POLL_INTERVAL <= 0:
         print("Background polling disabled.")
         return
-
     def loop():
         while True:
             with _poll_lock:
@@ -504,14 +500,13 @@ def start_background_polling():
                 except Exception as e:
                     print("Polling error:", e)
             time.sleep(POLL_INTERVAL)
-
     threading.Thread(target=loop, daemon=True).start()
 
 @app.before_request
 def _start_polling() -> None:
     start_background_polling()
 
-# ── SMS helpers ────────────────────────────────────────────────────────────
+# ──────────────────── Utilities ────────────────────────────────────────────
 def parse_windows(s: str):
     parts = [p.strip() for p in s.split(",") if p.strip()]
     if len(parts) > 2:
@@ -529,24 +524,30 @@ def parse_windows(s: str):
         windows.append({"start": start, "end": end})
     return windows
 
-# ── Routes ─────────────────────────────────────────────────────────────────
+# ──────────────────── Routes ───────────────────────────────────────────────
 @app.route("/", methods=["GET"])
 def health():
     return "ok", 200
 
-@app.route("/api/status", methods=["GET"])
+@app.route("/api/status", methods=["GET", "OPTIONS"])
+@cross_origin(origins=list(ALLOWED_ORIGINS),
+              methods=["GET", "OPTIONS"],
+              allow_headers=["Content-Type", "Authorization", "content-type"],
+              max_age=600)
 def status():
-    state = _load_raw_state()
-    if not state:
+    tc = _require_table_client(STATE_TABLE)
+    try:
+        ent = tc.get_entity(partition_key="state", row_key="latest")
+        data = json.loads(ent.get("data", "{}") or "{}")
+        return jsonify(data.get("poll", data))
+    except ResourceNotFoundError:
         return jsonify({"msg": "no data yet"})
-    # Back-compat: if state already NB/SB at top, return it; else return the latest poll
-    if "NB" in state and "SB" in state:
-        return jsonify(state)
-    if "poll" in state:
-        return jsonify(state["poll"])
-    return jsonify(state)
 
-@app.route("/api/signup", methods=["POST"])
+@app.route("/api/signup", methods=["POST", "OPTIONS"])
+@cross_origin(origins=list(ALLOWED_ORIGINS),
+              methods=["POST", "OPTIONS"],
+              allow_headers=["Content-Type", "Authorization", "content-type"],
+              max_age=600)
 def signup():
     data = request.get_json(silent=True) or {}
     raw = data.get("phone") if request.is_json else request.form.get("phone")
@@ -564,14 +565,21 @@ def signup():
     users.append({
         "phone": phone,
         "active": True,
-        "threshold": 0,
-        "windows": [{"start": "00:00", "end": "23:59"}],
+        "threshold": DEFAULT_THRESHOLD,
+        "windows": DEFAULT_WINDOWS,
+        "pausedUntil": 0,
     })
     save_user_settings(users)
     return {"msg": "registered"}, 201
 
-@app.route("/api/otp/start", methods=["POST"])
+@app.route("/api/otp/start", methods=["POST", "OPTIONS"])
+@cross_origin(origins=list(ALLOWED_ORIGINS),
+              methods=["POST", "OPTIONS"],
+              allow_headers=["Content-Type", "Authorization", "content-type"],
+              max_age=600)
 def otp_start():
+    if request.method == "OPTIONS":
+        return ("", 204)
     data = request.get_json(silent=True) or {}
     raw = data.get("phone")
     if not raw:
@@ -580,20 +588,23 @@ def otp_start():
         phone = normalize_phone(raw)
     except ValueError:
         return jsonify({"ok": True, "status": "sent"}), 200
-
     if not any(u["phone"] == phone for u in get_user_settings()):
         return jsonify({"ok": True, "status": "sent"}), 200
-
     ok, status2 = otp_issue_and_send(phone)
     if not ok and status2 == "cooldown":
         return jsonify({"ok": True, "status": "cooldown"}), 200
     if not ok and status2 == "too_many_attempts":
         return jsonify({"ok": False, "error": "locked"}), 429
-
     return jsonify({"ok": True, "status": "sent"}), 200
 
-@app.route("/api/otp/verify", methods=["POST"])
+@app.route("/api/otp/verify", methods=["POST", "OPTIONS"])
+@cross_origin(origins=list(ALLOWED_ORIGINS),
+              methods=["POST", "OPTIONS"],
+              allow_headers=["Content-Type", "Authorization", "content-type"],
+              max_age=600)
 def otp_verify():
+    if request.method == "OPTIONS":
+        return ("", 204)
     data = request.get_json(silent=True) or {}
     raw = data.get("phone")
     code = (data.get("code") or "").strip()
@@ -603,10 +614,8 @@ def otp_verify():
         phone = normalize_phone(raw)
     except ValueError:
         abort(400, "invalid phone")
-
     if not otp_verify_and_consume(phone, code):
         return jsonify({"ok": False, "error": "invalid_or_expired"}), 401
-
     token = _jwt_for_phone(phone)
     resp = {"ok": True}
     if token:
@@ -615,7 +624,11 @@ def otp_verify():
         resp["expires_in"] = JWT_TTL_MIN * 60
     return jsonify(resp), 200
 
-@app.route("/api/user/settings", methods=["GET", "POST"])
+@app.route("/api/user/settings", methods=["GET", "POST", "OPTIONS"])
+@cross_origin(origins=list(ALLOWED_ORIGINS),
+              methods=["GET", "POST", "OPTIONS"],
+              allow_headers=["Content-Type", "Authorization", "content-type"],
+              max_age=600)
 def user_settings_api():
     phone = _phone_from_request(request)
     if not phone:
@@ -627,11 +640,16 @@ def user_settings_api():
     if request.method == "GET":
         return jsonify({
             "phone": phone,
-            "threshold": user.get("threshold", 0),
-            "windows": user.get("windows", [])
+            "active": user.get("active", True),
+            "pausedUntil": int(user.get("pausedUntil", 0)),
+            "threshold": user.get("threshold", DEFAULT_THRESHOLD),
+            "windows": user.get("windows", DEFAULT_WINDOWS)
         })
-
     data = request.get_json(silent=True) or {}
+    if "active" in data:
+        user["active"] = bool(data["active"])
+        if user["active"]:
+            user["pausedUntil"] = 0
     if "threshold" in data:
         try:
             user["threshold"] = int(data["threshold"])
@@ -639,12 +657,13 @@ def user_settings_api():
             return jsonify({"ok": False, "error": "invalid_threshold"}), 400
     if "windows" in data:
         try:
-            user["windows"] = parse_windows(data["windows"])
+            user["windows"] = parse_windows(data["windows"]) if isinstance(data["windows"], str) else data["windows"]
         except ValueError as e:
             return jsonify({"ok": False, "error": str(e)}), 400
     save_user_settings(users)
     return jsonify({"ok": True, "settings": user}), 200
 
+# ---- Twilio inbound SMS ----------------------------------------------------
 @app.route("/sms", methods=["POST"], strict_slashes=False)
 def sms_webhook():
     if TWILIO_VALIDATE and not _twilio_signature_ok(request):
@@ -663,18 +682,38 @@ def sms_webhook():
         user = {
             "phone": from_number,
             "active": True,
-            "threshold": 0,
-            "windows": [{"start": "00:00", "end": "23:59"}]
+            "threshold": DEFAULT_THRESHOLD,
+            "windows": DEFAULT_WINDOWS,
+            "pausedUntil": 0,
         }
         users.append(user)
 
     resp = MessagingResponse()
+    now_sec = int(time.time())
+
+    if parts[0] == "PAUSE":
+        user["pausedUntil"] = now_sec + 3600  # 1 hour
+        save_user_settings(users)
+        resp.message("⏸️ Paused for 1 hour. Send REACTIVATE to resume sooner.")
+        return Response(str(resp), mimetype="application/xml")
+
+    if parts[0] == "DEACTIVATE":
+        user["active"] = False
+        save_user_settings(users)
+        resp.message("🔕 Alerts deactivated. Send REACTIVATE to turn them back on.")
+        return Response(str(resp), mimetype="application/xml")
+
+    if parts[0] == "REACTIVATE":
+        user["active"] = True
+        user["pausedUntil"] = 0
+        save_user_settings(users)
+        resp.message("🔔 Alerts reactivated.")
+        return Response(str(resp), mimetype="application/xml")
 
     if parts[0] == "STATUS":
         try:
             delays = get_delays()
             nb, sb = delays["NB"], delays["SB"]
-            # Simplified STATUS text (header + delays only)
             msg = (
                 "🚦 Lions Gate update\n"
                 f"Northbound delay: {nb['delay']}m\n"
@@ -698,13 +737,13 @@ def sms_webhook():
         except ValueError:
             resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]")
     elif parts[0] in ("LIST", "HELP"):
-        resp.message("Commands: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]")
+        resp.message("Commands: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM] | PAUSE | DEACTIVATE | REACTIVATE")
     else:
         resp.message("Unknown command. Send HELP for options.")
 
     return Response(str(resp), mimetype="application/xml")
 
-# ── Entrypoint ─────────────────────────────────────────────────────────────
+# ──────────────────── Entrypoint ───────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BridgeDelay monitor")
     parser.add_argument("--poll", action="store_true", help="Run delay check loop every 5 minutes")
