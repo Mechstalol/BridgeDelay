@@ -1,0 +1,86 @@
+html,
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* NAVBAR --------------------------------------------------------- */
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background: rgba(24, 27, 32, 0.85);
+  backdrop-filter: blur(8px);
+}
+
+.logo {
+  font-weight: 700;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.navbar nav a {
+  margin-left: 1.5rem;
+  color: var(--fg-muted);
+  text-decoration: none;
+  transition: 0.2s;
+}
+
+.navbar nav a:hover {
+  color: var(--fg);
+}
+
+/* HERO ----------------------------------------------------------- */
+.hero {
+  text-align: center;
+  margin: 4rem auto 3rem;
+  max-width: 700px;
+  padding: 0 1rem;
+}
+
+.hero__title {
+  margin: 0 0 0.75rem;
+  font-size: 2rem;
+  font-weight: 600;
+}
+
+.hero__subtitle {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+/* COMMAND LIST --------------------------------------------------- */
+.commands {
+  max-width: 800px;
+  margin: 0 auto 6rem;
+  padding: 0 1rem;
+}
+
+.command-item {
+  background: var(--panel);
+  border-radius: calc(var(--radius) * 1.2);
+  padding: 1.5rem 2rem;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+.command-item + .command-item {
+  margin-top: 1.5rem;
+}
+
+.command-item h2 {
+  margin-top: 0;
+  color: var(--accent);
+}
+
+.command-item p {
+  margin: 0.75rem 0 0;
+  color: var(--fg-muted);
+}
+
+/* FOOTER --------------------------------------------------------- */
+.footer {
+  text-align: center;
+  padding: 2rem 1rem 3rem;
+  color: var(--fg-muted);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
