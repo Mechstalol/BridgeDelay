@@ -90,13 +90,25 @@ body {
   color: var(--fg-muted);
 }
 
-/* Form grid: two inputs/row on ≥ 640 px, one per row on mobile */
+/* Settings form styling */
 .signup__form {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 1.2rem;
   margin-bottom: 1.8rem;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  justify-content: center;
+}
+
+.signup__form .field {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.signup__form label {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--fg);
 }
 
 .signup__form input {
@@ -110,7 +122,6 @@ body {
 }
 
 .signup__form button {
-  grid-column: 1 / -1;               /* full‑width button */
   padding: 0.9rem 2rem;
   border: none;
   border-radius: var(--radius);

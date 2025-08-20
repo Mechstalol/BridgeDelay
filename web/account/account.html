@@ -10,6 +10,10 @@
   <header class="navbar">
     <a href="../main.html" class="logo">BridgeDelay</a>
     <nav>
+      <a href="../main.html#features">Features</a>
+      <a href="../setup/setup.html">Setup</a>
+      <a href="../faq/faq.html">FAQ</a>
+      <a href="../commands.html">Commands</a>
       <a href="#" id="logout">Log Out</a>
     </nav>
   </header>
@@ -20,8 +24,14 @@
 
   <section class="signup">
     <form id="settings-form" class="signup__form">
-      <input type="number" id="threshold" placeholder="Delay threshold (minutes)">
-      <input type="text" id="windows" placeholder="Windows e.g. 07:00-09:00,16:00-18:00">
+      <div class="field">
+        <label for="threshold">Delay threshold (minutes)</label>
+        <input type="number" id="threshold" placeholder="20">
+      </div>
+      <div class="field">
+        <label for="windows">Quiet hours <small>(e.g., 07:00-09:00,16:00-18:00)</small></label>
+        <input type="text" id="windows" placeholder="07:00-09:00,16:00-18:00">
+      </div>
       <button type="submit" class="cta">Save</button>
     </form>
     <small id="settings-status" class="signup__note"></small>
