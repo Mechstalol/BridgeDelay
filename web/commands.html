@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BridgeDelay • Commands</title>
+  <link rel="stylesheet" href="core.css" />
+  <link rel="stylesheet" href="commands.css" />
+</head>
+<body>
+  <!-- NAVBAR -->
+  <header class="navbar">
+    <a href="main.html" class="logo">BridgeDelay</a>
+    <nav>
+      <a href="main.html#features">Features</a>
+      <a href="setup/setup.html">Setup</a>
+      <a href="faq/faq.html">FAQ</a>
+      <a href="signup/signup.html">Sign Up</a>
+      <a href="login/login.html">Log In</a>
+    </nav>
+  </header>
+
+  <!-- HERO TAGLINE -->
+  <section class="hero">
+    <h1 class="hero__title">Command Reference</h1>
+    <p class="hero__subtitle">Control BridgeDelay through simple texts.</p>
+  </section>
+
+  <!-- COMMAND LIST -->
+  <section class="commands">
+    <article class="command-item">
+      <h2>STATUS</h2>
+      <p>Get the current bridge status and travel time.</p>
+    </article>
+    <article class="command-item">
+      <h2>THRESHOLD {minutes}</h2>
+      <p>Set how many minutes of delay should trigger an alert.</p>
+    </article>
+    <article class="command-item">
+      <h2>WINDOW {start}-{end}</h2>
+      <p>Specify quiet hours when you don't want alerts.</p>
+    </article>
+    <article class="command-item">
+      <h2>STOP</h2>
+      <p>Pause all alerts until you send START.</p>
+    </article>
+    <article class="command-item">
+      <h2>START</h2>
+      <p>Resume alerts after sending STOP.</p>
+    </article>
+  </section>
+
+  <footer class="footer">
+    <p>© 2025 BridgeDelay • Made in 🇨🇦</p>
+  </footer>
+</body>
+</html>
