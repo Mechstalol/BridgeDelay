@@ -101,9 +101,9 @@ function showOtpStep(phone) {
 
     // Store JWT if backend returned one
     if (r.data?.token) {
-      localStorage.setItem("nv_token", r.data.token);
+      localStorage.setItem("token", r.data.token);
     }
-    localStorage.setItem("nv_phone", phone);
+    localStorage.setItem("phone", phone);
 
     setOtpMsg("You're in! Redirecting…", "#065f46");
     // Redirect to Setup page after successful verification
