@@ -36,8 +36,8 @@
       </div>
       <div class="bubbles-wrap">
         <div class="bubbles">
-          <div class="bubble out">Status?</div>
-          <div class="bubble in">✅ Bridge is clear — 8&nbsp;min travel time.</div>
+          <div class="bubble out">Status</div>
+          <div class="bubble in">✅ Bridge is clear — only a 2&nbsp;minute delay.</div>
         </div>
       </div>
     </div>
@@ -45,12 +45,12 @@
     <div class="sms-pair">
       <div class="sms-copy">
         <h2>THRESHOLD {minutes}</h2>
-        <p>Set how many minutes of delay should trigger an alert.</p>
+        <p>Set how many minutes of delay should trigger an alert. <br /> <br /> DEFAULT: <br />20&nbsp;Minutes</p>
       </div>
       <div class="bubbles-wrap">
         <div class="bubbles">
-          <div class="bubble out">THRESHOLD 20</div>
-          <div class="bubble in">Alerts for delays ≥ 20&nbsp;min.</div>
+          <div class="bubble out">THRESHOLD 15</div>
+          <div class="bubble in">Got it, your threshold is now set to 15&nbsp;minutes.</div>
         </div>
       </div>
     </div>
@@ -58,38 +58,38 @@
     <div class="sms-pair">
       <div class="sms-copy">
         <h2>WINDOW {start}-{end}</h2>
-        <p>Specify quiet hours when you don't want alerts.</p>
+        <p>Specify when you want alerts to be active. (max of two windows) <br /> <br /> DEFAULT: <br /> 6&nbsp;AM - 9&nbsp;AM; <br /> 4&nbsp;PM - 8&nbsp;PM</p>
       </div>
       <div class="bubbles-wrap">
         <div class="bubbles">
-          <div class="bubble out">WINDOW 7-9</div>
-          <div class="bubble in">📅 Quiet hours set for 7–9.</div>
+          <div class="bubble out">WINDOW 7:00-8:30</div>
+          <div class="bubble in">📅 Active hours set for 7:00–8:30.</div>
         </div>
       </div>
     </div>
 
     <div class="sms-pair">
       <div class="sms-copy">
-        <h2>STOP</h2>
-        <p>Pause all alerts until you send START.</p>
+        <h2>DEACTIVATE</h2>
+        <p>Pause all alerts until you send REACTIVATE.</p>
       </div>
       <div class="bubbles-wrap">
         <div class="bubbles">
-          <div class="bubble out">STOP</div>
-          <div class="bubble in">Alerts paused. Text START to resume.</div>
+          <div class="bubble out">DEACTIVATE</div>
+          <div class="bubble in">Alerts paused. Text REACTIVATE to resume.</div>
         </div>
       </div>
     </div>
 
     <div class="sms-pair">
       <div class="sms-copy">
-        <h2>START</h2>
-        <p>Resume alerts after sending STOP.</p>
+        <h2>REACTIVATE</h2>
+        <p>Resume alerts after sending DEACTIVATE.</p>
       </div>
       <div class="bubbles-wrap">
         <div class="bubbles">
-          <div class="bubble out">START</div>
-          <div class="bubble in">Alerts resumed. Welcome back!</div>
+          <div class="bubble out">REACTIVATE </div>
+          <div class="bubble in">Alerts resumed.</div>
         </div>
       </div>
     </div>
