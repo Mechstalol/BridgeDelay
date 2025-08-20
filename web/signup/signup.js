@@ -106,8 +106,8 @@ function showOtpStep(phone) {
     localStorage.setItem("nv_phone", phone);
 
     setOtpMsg("You're in! Redirecting…", "#065f46");
-    // Redirect to your app homepage or dashboard
-    window.location.href = "/";
+    // Redirect to Setup page after successful verification
+    window.location.href = "/setup/setup.html";
   };
 
   resendBtn.onclick = async () => {
