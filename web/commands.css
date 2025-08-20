@@ -51,31 +51,92 @@ body {
 
 /* COMMAND LIST --------------------------------------------------- */
 .commands {
-  max-width: 800px;
+  max-width: 1100px;
   margin: 0 auto 6rem;
   padding: 0 1rem;
 }
 
-.command-item {
-  background: var(--panel);
+.sms-pair {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2rem;
+  align-items: flex-start;
+  padding: 2.75rem;
+  margin-bottom: 4.5rem;
+  background: #1d1f23;
+  border-radius: calc(var(--radius) * 1.6);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
+  overflow: visible;
+}
+
+.sms-copy {
+  flex: 1 1 250px;
+  min-width: 230px;
+  padding-right: 1.25rem;
+}
+
+.sms-copy h2 { margin-top: 0; color: var(--accent); }
+.sms-copy p  { color: var(--fg-muted); }
+
+.bubbles-wrap {
+  flex: 1 1 260px;
+  min-width: 250px;
+  padding: 1.25rem 1.75rem;
+  background: #31343d;
   border-radius: calc(var(--radius) * 1.2);
-  padding: 1.5rem 2rem;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  transform: translateY(-6px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
-.command-item + .command-item {
-  margin-top: 1.5rem;
+.bubbles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
 }
 
-.command-item h2 {
-  margin-top: 0;
-  color: var(--accent);
+.bubble {
+  max-width: 260px;
+  padding: 0.75rem 1rem;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  border-radius: calc(var(--radius) * 1.2);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.55);
 }
 
-.command-item p {
-  margin: 0.75rem 0 0;
-  color: var(--fg-muted);
+.bubble.in  { background: var(--bg-alt); }
+.bubble.out { background: var(--accent); color: #fff; align-self: flex-end; }
+
+@media (max-width: 700px) {
+  .sms-pair {
+    display: block;
+    padding: 1rem;
+    row-gap: 0.85rem;
+  }
+  .sms-copy { margin-bottom: 0.85rem; }
+  .sms-copy p { margin: 0; }
+  .bubbles-wrap {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    padding: 0.85rem;
+    background: #31343d;
+    border-radius: calc(var(--radius) * 1.2);
+    transform: none;
+  }
+  .bubble {
+    width: 94%;
+    max-width: 94%;
+    align-self: center;
+  }
 }
+
+/* same when dev toggle forces mobile ------------------------- */
+body.force-mobile .sms-pair       { display:block;padding:1rem;row-gap:.85rem; }
+body.force-mobile .sms-copy       { margin-bottom:.85rem; }
+body.force-mobile .sms-copy p     { margin:0; }
+body.force-mobile .bubbles-wrap   { display:flex;flex-direction:column;width:100%;padding:.85rem;background:#31343d;border-radius:calc(var(--radius)*1.2);transform:none; }
+body.force-mobile .bubble         { width:94%;max-width:94%;align-self:center; }
 
 /* FOOTER --------------------------------------------------------- */
 .footer {
