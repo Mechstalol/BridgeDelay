@@ -104,7 +104,7 @@ ENABLE_POLLING = os.getenv("ENABLE_POLLING", "1").lower() not in ("0", "false", 
 JWT_SECRET  = os.getenv("JWT_SECRET")
 JWT_TTL_MIN = int(os.getenv("JWT_TTL_MIN", "43200"))  # 30 days
 
-NOTIFY_MIN_STEP    = int(os.getenv("NOTIFY_MIN_STEP", "5"))
+NOTIFY_MIN_STEP    = int(os.getenv("NOTIFY_MIN_STEP", "10"))
 NOTIFY_MIN_GAP_SEC = int(os.getenv("NOTIFY_MIN_GAP_SEC", "60"))
 
 OTP_TABLE            = "userOtp"
@@ -134,8 +134,10 @@ STATE_TABLE = "lastStatus"
 USER_TABLE  = "userSettings"
 
 DEFAULT_THRESHOLD = 15
-DEFAULT_WINDOWS   = [{"start": "06:00", "end": "09:00"},
-                     {"start": "16:00", "end": "20:00"}]
+DEFAULT_WINDOWS   = [
+    {"start": "06:00", "end": "09:00", "dir": "SB"},
+    {"start": "16:00", "end": "20:00", "dir": "NB"},
+]
 
 SEV_EMOJI = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
 
@@ -375,8 +377,14 @@ def severity_level(delay: int) -> int:
     else:
         return 3
 
-def within_window(now_hhmm: str, windows):
-    return any(w["start"] <= now_hhmm <= w["end"] for w in windows)
+def window_direction(now_hhmm: str, windows):
+    for w in windows:
+        if w["start"] <= now_hhmm <= w["end"]:
+            d = w.get("dir")
+            if d in ("NB", "SB"):
+                return d
+            return "BOTH"
+    return None
 
 def _should_notify(prev_sent: Dict[str, Any], current: Dict[str, Any]) -> bool:
     if not prev_sent:
@@ -438,11 +446,6 @@ def check_and_notify():
 
 def _broadcast_delays(current: Dict[str, Dict[str, int]]):
     nb_s, sb_s = current["NB"], current["SB"]
-    body = (
-        "🚦 Lions Gate update\n"
-        f"Northbound delay: {nb_s['delay']}m\n"
-        f"Southbound delay: {sb_s['delay']}m"
-    )
     now_str = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
     now_sec = int(time.time())
 
@@ -451,11 +454,26 @@ def _broadcast_delays(current: Dict[str, Dict[str, int]]):
             continue
         if int(u.get("pausedUntil", 0)) > now_sec:
             continue
-        if (nb_s["delay"] < u.get("threshold", DEFAULT_THRESHOLD) and
-            sb_s["delay"] < u.get("threshold", DEFAULT_THRESHOLD)):
+        direction = window_direction(now_str, u.get("windows", DEFAULT_WINDOWS))
+        if not direction:
             continue
-        if not within_window(now_str, u.get("windows", DEFAULT_WINDOWS)):
-            continue
+        threshold = u.get("threshold", DEFAULT_THRESHOLD)
+        if direction == "NB":
+            if nb_s["delay"] < threshold:
+                continue
+            body = "🚦 Lions Gate update\nNorthbound delay: {0}m".format(nb_s["delay"])
+        elif direction == "SB":
+            if sb_s["delay"] < threshold:
+                continue
+            body = "🚦 Lions Gate update\nSouthbound delay: {0}m".format(sb_s["delay"])
+        else:
+            if nb_s["delay"] < threshold and sb_s["delay"] < threshold:
+                continue
+            body = (
+                "🚦 Lions Gate update\n"
+                f"Northbound delay: {nb_s['delay']}m\n"
+                f"Southbound delay: {sb_s['delay']}m"
+            )
         sid = send_sms(body, u["phone"])
         print(f"🔔 Sent to {u['phone']}: {sid}")
 
@@ -492,14 +510,17 @@ def parse_windows(s: str):
     windows = []
     for part in parts:
         try:
-            start, end = part.split("-", 1)
+            time_range, direction = part.rsplit(" ", 1)
+            start, end = time_range.split("-", 1)
+            if direction not in ("NB", "SB"):
+                raise ValueError
             if not re.match(r"^\d{2}:\d{2}$", start) or not re.match(r"^\d{2}:\d{2}$", end):
                 raise ValueError
             if start >= end:
                 raise ValueError
         except ValueError:
-            raise ValueError(f"Invalid window: '{part}'")
-        windows.append({"start": start, "end": end})
+            raise ValueError(f"Invalid window: '{part}' (use HH:MM-HH:MM NB/SB)")
+        windows.append({"start": start, "end": end, "dir": direction})
     return windows
 
 # ──────────────────── Routes ───────────────────────────────────────────────
@@ -710,12 +731,12 @@ def sms_webhook():
         try:
             user["windows"] = parse_windows(parts[1])
             save_user_settings(users)
-            win_str = ", ".join(f"{w['start']}-{w['end']}" for w in user["windows"])
+            win_str = ", ".join(f"{w['start']}-{w['end']} {w['dir']}" for w in user["windows"])
             resp.message(f"✅ Windows set to {win_str}")
         except ValueError:
-            resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]")
+            resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR]")
     elif parts[0] in ("LIST", "HELP"):
-        resp.message("Commands: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM[,HH:MM-HH:MM] | PAUSE | DEACTIVATE | REACTIVATE")
+        resp.message("Commands: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR] | PAUSE | DEACTIVATE | REACTIVATE")
     else:
         resp.message("Unknown command. Send HELP for options.")
 

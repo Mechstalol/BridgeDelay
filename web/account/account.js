@@ -20,7 +20,7 @@ async function loadSettings() {
     if (!res.ok) throw new Error();
     const data = await res.json();
     document.getElementById('threshold').value = data.threshold ?? 0;
-    const winStr = (data.windows || []).map(w => `${w.start}-${w.end}`).join(',');
+    const winStr = (data.windows || []).map(w => `${w.start}-${w.end} ${w.dir}`).join(',');
     document.getElementById('windows').value = winStr;
   } catch {
     statusEl.textContent = 'Could not load settings.';
