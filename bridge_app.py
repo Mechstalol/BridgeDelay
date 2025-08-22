@@ -133,6 +133,9 @@ SB_BASE_MIN = 4
 STATE_TABLE = "lastStatus"
 USER_TABLE  = "userSettings"
 
+DEFAULT_THRESHOLD_NB = 20
+DEFAULT_THRESHOLD_SB = 20
+# Backward-compat global default (pre-direction split)
 DEFAULT_THRESHOLD = 20
 DEFAULT_WINDOWS   = [
     {"start": "06:00", "end": "09:00", "dir": "SB"},
@@ -239,7 +242,8 @@ def load_user_settings() -> List[Dict[str, Any]]:
             {
                 "phone": ent["RowKey"],
                 "active": bool(ent.get("active", True)),
-                "threshold": int(ent.get("threshold", DEFAULT_THRESHOLD)),
+                "threshold_nb": int(ent.get("threshold_nb", ent.get("threshold", DEFAULT_THRESHOLD_NB))),
+                "threshold_sb": int(ent.get("threshold_sb", ent.get("threshold", DEFAULT_THRESHOLD_SB))),
                 "windows": json.loads(ent.get("windows", json.dumps(DEFAULT_WINDOWS))),
                 "pausedUntil": int(ent.get("pausedUntil", 0)),
             }
@@ -253,7 +257,8 @@ def save_user_settings(settings: List[Dict[str, Any]]):
             "PartitionKey": "user",
             "RowKey": u["phone"],
             "active": u.get("active", True),
-            "threshold": u.get("threshold", DEFAULT_THRESHOLD),
+            "threshold_nb": u.get("threshold_nb", DEFAULT_THRESHOLD_NB),
+            "threshold_sb": u.get("threshold_sb", DEFAULT_THRESHOLD_SB),
             "windows": json.dumps(u.get("windows", DEFAULT_WINDOWS)),
             "pausedUntil": int(u.get("pausedUntil", 0)),
         }
@@ -457,17 +462,18 @@ def _broadcast_delays(current: Dict[str, Dict[str, int]]):
         direction = window_direction(now_str, u.get("windows", DEFAULT_WINDOWS))
         if not direction:
             continue
-        threshold = u.get("threshold", DEFAULT_THRESHOLD)
+        threshold_nb = u.get("threshold_nb", u.get("threshold", DEFAULT_THRESHOLD_NB))
+        threshold_sb = u.get("threshold_sb", u.get("threshold", DEFAULT_THRESHOLD_SB))
         if direction == "NB":
-            if nb_s["delay"] < threshold:
+            if nb_s["delay"] < threshold_nb:
                 continue
             body = "🚦 Lions Gate update\nNorthbound delay: {0}m".format(nb_s["delay"])
         elif direction == "SB":
-            if sb_s["delay"] < threshold:
+            if sb_s["delay"] < threshold_sb:
                 continue
             body = "🚦 Lions Gate update\nSouthbound delay: {0}m".format(sb_s["delay"])
         else:
-            if nb_s["delay"] < threshold and sb_s["delay"] < threshold:
+            if nb_s["delay"] < threshold_nb and sb_s["delay"] < threshold_sb:
                 continue
             body = (
                 "🚦 Lions Gate update\n"
@@ -511,6 +517,7 @@ def parse_windows(s: str):
     for part in parts:
         try:
             time_range, direction = part.rsplit(" ", 1)
+            direction = direction.upper()
             start, end = time_range.split("-", 1)
             if direction not in ("NB", "SB"):
                 raise ValueError
@@ -564,7 +571,8 @@ def signup():
     users.append({
         "phone": phone,
         "active": True,
-        "threshold": DEFAULT_THRESHOLD,
+        "threshold_nb": DEFAULT_THRESHOLD_NB,
+        "threshold_sb": DEFAULT_THRESHOLD_SB,
         "windows": DEFAULT_WINDOWS,
         "pausedUntil": 0,
     })
@@ -641,7 +649,8 @@ def user_settings_api():
             "phone": phone,
             "active": user.get("active", True),
             "pausedUntil": int(user.get("pausedUntil", 0)),
-            "threshold": user.get("threshold", DEFAULT_THRESHOLD),
+            "threshold_nb": user.get("threshold_nb", DEFAULT_THRESHOLD_NB),
+            "threshold_sb": user.get("threshold_sb", DEFAULT_THRESHOLD_SB),
             "windows": user.get("windows", DEFAULT_WINDOWS)
         })
     data = request.get_json(silent=True) or {}
@@ -649,9 +658,22 @@ def user_settings_api():
         user["active"] = bool(data["active"])
         if user["active"]:
             user["pausedUntil"] = 0
-    if "threshold" in data:
+    if "threshold_nb" in data:
         try:
-            user["threshold"] = int(data["threshold"])
+            user["threshold_nb"] = int(data["threshold_nb"])
+        except Exception:
+            return jsonify({"ok": False, "error": "invalid_threshold_nb"}), 400
+    if "threshold_sb" in data:
+        try:
+            user["threshold_sb"] = int(data["threshold_sb"])
+        except Exception:
+            return jsonify({"ok": False, "error": "invalid_threshold_sb"}), 400
+    if "threshold" in data:
+        # Backward compatibility: set both thresholds
+        try:
+            val = int(data["threshold"])
+            user["threshold_nb"] = val
+            user["threshold_sb"] = val
         except Exception:
             return jsonify({"ok": False, "error": "invalid_threshold"}), 400
     if "windows" in data:
@@ -673,7 +695,8 @@ def sms_webhook():
         abort(400)
 
     body_raw = request.form.get("Body", "").strip()
-    parts    = body_raw.upper().split(maxsplit=1) if body_raw else ["HELP"]
+    parts    = body_raw.upper().split() if body_raw else ["HELP"]
+    args = parts[1:]
 
     users = get_user_settings()
     user  = next((u for u in users if u["phone"] == from_number), None)
@@ -681,7 +704,8 @@ def sms_webhook():
         user = {
             "phone": from_number,
             "active": True,
-            "threshold": DEFAULT_THRESHOLD,
+            "threshold_nb": DEFAULT_THRESHOLD_NB,
+            "threshold_sb": DEFAULT_THRESHOLD_SB,
             "windows": DEFAULT_WINDOWS,
             "pausedUntil": 0,
         }
@@ -723,20 +747,33 @@ def sms_webhook():
         resp.message(msg)
         return Response(str(resp), mimetype="application/xml")
 
-    if parts[0] == "THRESHOLD" and len(parts) == 2 and parts[1].isdigit():
-        user["threshold"] = int(parts[1])
-        save_user_settings(users)
-        resp.message(f"✅ Threshold set to {parts[1]} minutes.")
-    elif parts[0] == "WINDOW" and len(parts) == 2:
+    if parts[0] == "THRESHOLD":
+        if len(args) == 2 and args[0] in ("NB", "SB") and args[1].isdigit():
+            val = int(args[1])
+            if args[0] == "NB":
+                user["threshold_nb"] = val
+            else:
+                user["threshold_sb"] = val
+            save_user_settings(users)
+            resp.message(f"✅ {args[0]} threshold set to {val} minutes.")
+        elif len(args) == 1 and args[0].isdigit():
+            val = int(args[0])
+            user["threshold_nb"] = val
+            user["threshold_sb"] = val
+            save_user_settings(users)
+            resp.message(f"✅ Threshold set to {val} minutes for NB and SB.")
+        else:
+            resp.message("❌ Use THRESHOLD NB|SB <minutes> or THRESHOLD <minutes>.")
+    elif parts[0] == "WINDOW" and args:
         try:
-            user["windows"] = parse_windows(parts[1])
+            user["windows"] = parse_windows(" ".join(args))
             save_user_settings(users)
             win_str = ", ".join(f"{w['start']}-{w['end']} {w['dir']}" for w in user["windows"])
             resp.message(f"✅ Windows set to {win_str}")
         except ValueError:
             resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR]")
     elif parts[0] in ("LIST", "HELP"):
-        resp.message("Commands: STATUS | THRESHOLD n | WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR] | PAUSE | DEACTIVATE | REACTIVATE")
+        resp.message("Commands: STATUS | THRESHOLD NB/SB n | WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR] | PAUSE | DEACTIVATE | REACTIVATE")
     else:
         resp.message("Unknown command. Send HELP for options.")
 
