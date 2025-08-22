@@ -133,7 +133,7 @@ SB_BASE_MIN = 4
 STATE_TABLE = "lastStatus"
 USER_TABLE  = "userSettings"
 
-DEFAULT_THRESHOLD = 15
+DEFAULT_THRESHOLD = 20
 DEFAULT_WINDOWS   = [
     {"start": "06:00", "end": "09:00", "dir": "SB"},
     {"start": "16:00", "end": "20:00", "dir": "NB"},
