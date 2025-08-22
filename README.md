@@ -68,6 +68,6 @@ docker run -p 80:8000 \
 ## Usage examples
 
 Send `STATUS` to the Twilio number to receive the current delay. Adjust your
-alert threshold with `THRESHOLD <minutes>` or define time windows with
-`WINDOW HH:MM-HH:MM[,HH:MM-HH:MM]`. Use `LIST` or `HELP` for a summary of
-available commands.
+alert threshold with `THRESHOLD <minutes>` or define time windows and
+directions with `WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR]`. Use `LIST` or `HELP`
+for a summary of available commands.
