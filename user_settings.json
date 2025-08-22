@@ -1,7 +1,8 @@
 [
   {
     "phone": "+14161234567",
-    "threshold": 25,
+    "threshold_nb": 25,
+    "threshold_sb": 25,
     "windows": [
       {
         "start": "07:00",
@@ -17,7 +18,8 @@
   },
   {
     "phone": "+16729991314",
-    "threshold": 5,
+    "threshold_nb": 5,
+    "threshold_sb": 5,
     "windows": [
       {
         "start": "00:00",

@@ -19,7 +19,8 @@ async function loadSettings() {
     }
     if (!res.ok) throw new Error();
     const data = await res.json();
-    document.getElementById('threshold').value = data.threshold ?? 0;
+    document.getElementById('threshold_nb').value = data.threshold_nb ?? 0;
+    document.getElementById('threshold_sb').value = data.threshold_sb ?? 0;
     const winStr = (data.windows || []).map(w => `${w.start}-${w.end} ${w.dir}`).join(',');
     document.getElementById('windows').value = winStr;
   } catch {
@@ -29,7 +30,8 @@ async function loadSettings() {
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const threshold = parseInt(document.getElementById('threshold').value, 10) || 0;
+  const threshold_nb = parseInt(document.getElementById('threshold_nb').value, 10) || 0;
+  const threshold_sb = parseInt(document.getElementById('threshold_sb').value, 10) || 0;
   const windows = document.getElementById('windows').value.trim();
   try {
     const res = await fetch(`${API_BASE}/api/user/settings`, {
@@ -38,7 +40,7 @@ form.addEventListener('submit', async (e) => {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + token
       },
-      body: JSON.stringify({ threshold, windows })
+      body: JSON.stringify({ threshold_nb, threshold_sb, windows })
     });
     if (res.status === 401) {
       localStorage.removeItem('token');
