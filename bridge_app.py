@@ -5,7 +5,7 @@ BridgeDelay — unified Maps-API + SMS webhook (+ OTP login)
 Azure-only (no local file fallbacks).
 CORS fixed for all /api/* endpoints (OPTIONS + response headers).
 No ETag compare-and-swap (works with Cosmos Table + classic Table).
-Notify when severity changes OR delay jump ≥ NOTIFY_MIN_STEP minutes.
+Notify when severity changes OR delay jump ≥ NOTIFY_MIN_STEP minutes from last alert.
 Message shows only delays (no base/live).
 """
 
@@ -104,7 +104,7 @@ ENABLE_POLLING = os.getenv("ENABLE_POLLING", "1").lower() not in ("0", "false", 
 JWT_SECRET  = os.getenv("JWT_SECRET")
 JWT_TTL_MIN = int(os.getenv("JWT_TTL_MIN", "43200"))  # 30 days
 
-NOTIFY_MIN_STEP    = int(os.getenv("NOTIFY_MIN_STEP", "10"))
+NOTIFY_MIN_STEP    = int(os.getenv("NOTIFY_MIN_STEP", "15"))
 NOTIFY_MIN_GAP_SEC = int(os.getenv("NOTIFY_MIN_GAP_SEC", "60"))
 
 OTP_TABLE            = "userOtp"
@@ -138,8 +138,8 @@ DEFAULT_THRESHOLD_SB = 20
 # Backward-compat global default (pre-direction split)
 DEFAULT_THRESHOLD = 20
 DEFAULT_WINDOWS   = [
-    {"start": "06:00", "end": "09:00", "dir": "SB"},
-    {"start": "16:00", "end": "20:00", "dir": "NB"},
+    {"start": "06:30", "end": "08:30", "dir": "SB"},
+    {"start": "16:30", "end": "19:30", "dir": "NB"},
 ]
 
 SEV_EMOJI = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
@@ -391,19 +391,15 @@ def window_direction(now_hhmm: str, windows):
             return "BOTH"
     return None
 
-def _should_notify(prev_sent: Dict[str, Any], current: Dict[str, Any]) -> bool:
-    if not prev_sent:
+def _should_notify(last_msg: Dict[str, Any], current: Dict[str, Any], direction: str) -> bool:
+    if not last_msg:
         return False
-    nb, sb = current["NB"], current["SB"]
-    pnb, psb = prev_sent["NB"], prev_sent["SB"]
-    sev_changed = (
-        severity_level(nb["delay"]) != severity_level(pnb["delay"])
-        or severity_level(sb["delay"]) != severity_level(psb["delay"])
-    )
-    big_move = (
-        abs(nb["delay"] - pnb["delay"]) >= NOTIFY_MIN_STEP
-        or abs(sb["delay"] - psb["delay"]) >= NOTIFY_MIN_STEP
-    )
+    prev = last_msg.get(direction)
+    curr = current.get(direction)
+    if not prev or not curr:
+        return False
+    sev_changed = severity_level(curr["delay"]) != severity_level(prev["delay"])
+    big_move = abs(curr["delay"] - prev["delay"]) >= NOTIFY_MIN_STEP
     return sev_changed or big_move
 
 # ──────────────────── State helpers (no ETag) ──────────────────────────────
@@ -411,16 +407,49 @@ def _state_load(tc):
     """Return dict state (creates skeleton on first run)."""
     try:
         ent = tc.get_entity(partition_key="state", row_key="latest")
-        return json.loads(ent.get("data", "{}") or "{}")
+        state = json.loads(ent.get("data", "{}") or "{}")
     except ResourceNotFoundError:
-        init = {"poll": {}, "last_sent": None, "last_sent_at": 0}
-        tc.upsert_entity({"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(init)})
-        return init
+        state = {
+            "poll": {},
+            "last_sent": {"NB": None, "SB": None},
+            "last_sent_at": {"NB": 0, "SB": 0},
+        }
+        tc.upsert_entity({"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(state)})
+        return state
+
+    state.setdefault("poll", {})
+    ls = state.get("last_sent")
+    if not isinstance(ls, dict):
+        state["last_sent"] = {"NB": None, "SB": None}
+    else:
+        ls.setdefault("NB", None)
+        ls.setdefault("SB", None)
+    lsa = state.get("last_sent_at")
+    if not isinstance(lsa, dict):
+        state["last_sent_at"] = {"NB": 0, "SB": 0}
+    else:
+        lsa.setdefault("NB", 0)
+        lsa.setdefault("SB", 0)
+    return state
 
 def _state_save(tc, state: Dict[str, Any]) -> None:
     tc.upsert_entity({"PartitionKey": "state", "RowKey": "latest", "data": json.dumps(state)})
 
 # ──────────────────── Core poller (single-instance safe) ───────────────────
+def _is_first_window(direction: str, now_sec: int, last_sent_at: int) -> bool:
+    tz = ZoneInfo("America/Vancouver")
+    now = datetime.now(tz)
+    start_str = next((w["start"] for w in DEFAULT_WINDOWS if w.get("dir") == direction), None)
+    if start_str:
+        h, m = map(int, start_str.split(":"))
+        start = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    else:
+        # Fallback to hard-coded defaults
+        start = now.replace(hour=6 if direction == "SB" else 16, minute=0, second=0, microsecond=0)
+    start_sec = int(start.timestamp())
+    return last_sent_at < start_sec <= now_sec
+
+
 def check_and_notify():
     tc = _require_table_client(STATE_TABLE)
 
@@ -431,55 +460,55 @@ def check_and_notify():
     state["poll"] = current
     now_sec = int(time.time())
 
-    prev_sent = state.get("last_sent")
-    last_at   = int(state.get("last_sent_at", 0) or 0)
+    last_msg = state.get("last_sent", {})
+    last_at = state.get("last_sent_at", {})
 
-    should = False
-    if prev_sent and (now_sec - last_at) >= NOTIFY_MIN_GAP_SEC and _should_notify(prev_sent, current):
-        should = True
+    to_send: List[str] = []
+    first_flags: Dict[str, bool] = {}
+    for direction in ("NB", "SB"):
+        last_dir_at = int(last_at.get(direction, 0))
+        if last_msg.get(direction) and (now_sec - last_dir_at) >= NOTIFY_MIN_GAP_SEC and _should_notify(last_msg, current, direction):
+            to_send.append(direction)
+            first_flags[direction] = _is_first_window(direction, now_sec, last_dir_at)
 
-    if not should:
+    if not to_send:
         _state_save(tc, state)
         return
 
-    # Save send metadata first, then broadcast
-    state["last_sent"] = current
-    state["last_sent_at"] = now_sec
+    for direction in to_send:
+        last_msg[direction] = current[direction]
+        last_at[direction] = now_sec
+    state["last_sent"] = last_msg
+    state["last_sent_at"] = last_at
     _state_save(tc, state)
 
-    _broadcast_delays(current)
+    for direction in to_send:
+        _broadcast_delays(current, direction, first_flags.get(direction, False))
 
-def _broadcast_delays(current: Dict[str, Dict[str, int]]):
-    nb_s, sb_s = current["NB"], current["SB"]
+def _broadcast_delays(current: Dict[str, Dict[str, int]], direction: str, first_in_window: bool):
     now_str = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
     now_sec = int(time.time())
+
+    data = current[direction]
+    label = "Northbound" if direction == "NB" else "Southbound"
 
     for u in get_user_settings():
         if not u.get("active", True):
             continue
         if int(u.get("pausedUntil", 0)) > now_sec:
             continue
-        direction = window_direction(now_str, u.get("windows", DEFAULT_WINDOWS))
-        if not direction:
+        user_dir = window_direction(now_str, u.get("windows", DEFAULT_WINDOWS))
+        if user_dir not in (direction, "BOTH"):
             continue
-        threshold_nb = u.get("threshold_nb", u.get("threshold", DEFAULT_THRESHOLD_NB))
-        threshold_sb = u.get("threshold_sb", u.get("threshold", DEFAULT_THRESHOLD_SB))
-        if direction == "NB":
-            if nb_s["delay"] < threshold_nb:
-                continue
-            body = "🚦 Lions Gate update\nNorthbound delay: {0}m".format(nb_s["delay"])
-        elif direction == "SB":
-            if sb_s["delay"] < threshold_sb:
-                continue
-            body = "🚦 Lions Gate update\nSouthbound delay: {0}m".format(sb_s["delay"])
-        else:
-            if nb_s["delay"] < threshold_nb and sb_s["delay"] < threshold_sb:
-                continue
-            body = (
-                "🚦 Lions Gate update\n"
-                f"Northbound delay: {nb_s['delay']}m\n"
-                f"Southbound delay: {sb_s['delay']}m"
-            )
+        threshold = u.get(
+            "threshold_nb" if direction == "NB" else "threshold_sb",
+            u.get("threshold", DEFAULT_THRESHOLD_NB if direction == "NB" else DEFAULT_THRESHOLD_SB),
+        )
+        if data["delay"] < threshold:
+            continue
+        body = f"🚦 Lions Gate update\n{label} delay: {data['delay']}m"
+        if first_in_window:
+            body += "\nReply PAUSE to pause alerts."
         sid = send_sms(body, u["phone"])
         print(f"🔔 Sent to {u['phone']}: {sid}")
 
