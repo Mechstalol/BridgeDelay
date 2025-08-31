@@ -1,9 +1,12 @@
 # BridgeDelay
 
 A simple monitor that polls Google Maps for Lions Gate Bridge travel times and
-sends SMS alerts when delay severity changes. It also exposes a Twilio SMS
-webhook so users can adjust alert preferences or query the current status on
-demand.
+sends SMS alerts when delay severity changes or the delay jumps by at least 15
+minutes since the last alert. It also exposes a Twilio SMS webhook so users can
+adjust alert preferences or query the current status on demand. By default, the
+app sends southbound alerts in the morning (06:30–08:30) and northbound alerts
+in the evening (16:30–19:30). The first alert after each window starts reminds
+you to reply "PAUSE" if you need to silence notifications.
 
 ## Environment variables
 
@@ -13,14 +16,14 @@ Set the following variables before running the app:
 - `TWILIO_ACCOUNT_SID` – Twilio account SID used to send SMS.
 - `TWILIO_AUTH_TOKEN` – Twilio auth token.
 - `TWILIO_FROM_NUMBER` – The Twilio phone number that sends the alerts.
- codex/add-background-job-for-notifications
 - `TWILIO_TO_NUMBERS` – Comma-separated list of recipient numbers for the
   monitor when running without per-user settings.
 - `ENABLE_POLLING` – Set to `0` to disable the background polling thread.
 - `POLL_INTERVAL` – Interval in seconds between delay checks. Defaults to
-  `300` seconds. Setting it to `0` also disables polling.
-  The thread starts automatically on the first request.
-
+  `300` seconds. Setting it to `0` also disables polling. The thread starts
+  automatically on the first request.
+- `NOTIFY_MIN_STEP` – Minimum change in delay (minutes) from the last message
+  before another alert is sent for the same direction. Defaults to `15`.
 
 ## Running locally
 
