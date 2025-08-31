@@ -14,10 +14,15 @@ Set the following variables before running the app:
 
 - `GOOGLE_MAPS_API_KEY` – Google Maps Routes API key used for delay lookups.
 - `TWILIO_ACCOUNT_SID` – Twilio account SID used to send SMS.
-- `TWILIO_AUTH_TOKEN` – Twilio auth token.
+- `TWILIO_AUTH_TOKEN` – Twilio auth token (required unless using the API key
+  pair below).
+- `TWILIO_API_KEY`/`TWILIO_API_SECRET` – Optional API key credentials. When
+  both are present along with `TWILIO_ACCOUNT_SID`, they are used instead of
+  `TWILIO_AUTH_TOKEN`.
 - `TWILIO_FROM_NUMBER` – The Twilio phone number that sends the alerts.
 - `TWILIO_TO_NUMBERS` – Comma-separated list of recipient numbers for the
   monitor when running without per-user settings.
+- `JWT_SECRET`/`OTP_SIGNING_KEY` – Secret used to sign OTP login tokens.
 - `ENABLE_POLLING` – Set to `0` to disable the background polling thread.
 - `POLL_INTERVAL` – Interval in seconds between delay checks. Defaults to
   `300` seconds. Setting it to `0` also disables polling. The thread starts
@@ -65,6 +70,7 @@ docker run -p 80:8000 \
   -e TWILIO_AUTH_TOKEN=... \
   -e TWILIO_FROM_NUMBER=... \
   -e TWILIO_TO_NUMBERS=... \
+  -e JWT_SECRET=... \
   bridgedelay
 ```
 
