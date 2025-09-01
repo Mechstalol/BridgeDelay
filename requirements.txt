@@ -7,4 +7,5 @@ azure-identity
 azure-data-tables>=12.5
 Flask-Limiter>=3.5
 PyJWT>=2.8.0
+phonenumbers
 
