@@ -586,15 +586,22 @@ def _broadcast_delays(current: Dict[str, Dict[str, int]], direction: str, first_
         sid = send_sms(body, u["phone"])
         print(f"🔔 Sent to {u['phone']}: {sid}")
 
-# ──────────────────── Background poller ────────────────────────────────────
+# ──────────────────── Background poller (fixed lock + retry) ───────────────
 _poll_lock = threading.Lock()
 _poll_started = False
 
 def start_background_polling():
+    """
+    Start the poller only after we actually acquire the distributed lock.
+    If another instance holds the lock, schedule a retry instead of
+    flipping _poll_started and giving up forever.
+    """
     global _poll_started
+
+    # don’t start multiple loops in this process
     if _poll_started:
         return
-    _poll_started = True
+
     if not ENABLE_POLLING or POLL_INTERVAL <= 0:
         print("Background polling disabled.")
         return
@@ -602,39 +609,62 @@ def start_background_polling():
     tc = _require_table_client(STATE_TABLE)
     now = int(time.time())
     expire = now + POLL_INTERVAL * 2
-    lock_entity = {
-        "PartitionKey": LOCK_PARTITION,
-        "RowKey": LOCK_ROW,
-        "owner": _poll_id,
-        "expiresAt": expire,
-    }
+
+    # Try to acquire/refresh the lock atomically
+    acquired = False
     try:
-        tc.create_entity(lock_entity)
+        # First attempt: create (will fail if exists)
+        tc.create_entity({
+            "PartitionKey": LOCK_PARTITION,
+            "RowKey": LOCK_ROW,
+            "owner": _poll_id,
+            "expiresAt": expire,
+        })
+        acquired = True
+        print(f"[poll] lock created by {_poll_id}")
     except ResourceExistsError:
         try:
             ent = tc.get_entity(LOCK_PARTITION, LOCK_ROW)
-            if now > int(ent.get("expiresAt", 0)):
-                try:
-                    tc.delete_entity(LOCK_PARTITION, LOCK_ROW)
-                    tc.create_entity(lock_entity)
-                except Exception:
-                    print("Another poller active; skipping.")
-                    return
+            holder = ent.get("owner")
+            ttl = int(ent.get("expiresAt", 0))
+            if now > ttl:
+                # Lock expired → steal by upserting (no delete race)
+                ent["owner"] = _poll_id
+                ent["expiresAt"] = expire
+                tc.upsert_entity(ent)
+                acquired = True
+                print(f"[poll] lock expired; stolen by {_poll_id} (was {holder})")
             else:
-                print("Another poller active; skipping.")
-                return
+                # Someone else is active; do NOT flip _poll_started — retry later
+                print(f"[poll] another instance active ({holder}); retrying in 30s")
         except ResourceNotFoundError:
+            # Race: it vanished between create+get → retry create once
             try:
-                tc.create_entity(lock_entity)
-            except Exception:
-                print("Another poller active; skipping.")
-                return
+                tc.create_entity({
+                    "PartitionKey": LOCK_PARTITION,
+                    "RowKey": LOCK_ROW,
+                    "owner": _poll_id,
+                    "expiresAt": expire,
+                })
+                acquired = True
+                print(f"[poll] lock created after race by {_poll_id}")
+            except Exception as e:
+                print(f"[poll] lock create race failed; retrying in 30s: {e}")
+
+    if not acquired:
+        # schedule a retry; don’t mark started
+        threading.Timer(30, start_background_polling).start()
+        return
+
+    # From here, we actually own the lock ⇒ now we can mark started
+    _poll_started = True
 
     def release_lock() -> None:
         try:
             ent = tc.get_entity(LOCK_PARTITION, LOCK_ROW)
             if ent.get("owner") == _poll_id:
                 tc.delete_entity(LOCK_PARTITION, LOCK_ROW)
+                print("[poll] lock released")
         except Exception:
             pass
 
@@ -650,18 +680,25 @@ def start_background_polling():
             try:
                 ent = tc.get_entity(LOCK_PARTITION, LOCK_ROW)
                 if ent.get("owner") != _poll_id:
+                    print("[poll] lost lock; stopping")
                     break
                 ent["expiresAt"] = int(time.time()) + POLL_INTERVAL * 2
                 tc.upsert_entity(ent)
-            except Exception:
+            except Exception as e:
+                print(f"[poll] lock heartbeat failed; stopping: {e}")
                 break
             time.sleep(POLL_INTERVAL)
         release_lock()
 
     threading.Thread(target=loop, daemon=True).start()
 
+# Start on first request AND on first worker boot (no request needed)
 @app.before_request
-def _start_polling() -> None:
+def _start_polling_on_request() -> None:
+    start_background_polling()
+
+@app.before_first_request
+def _start_polling_on_boot() -> None:
     start_background_polling()
 
 # ──────────────────── Utilities ────────────────────────────────────────────
