@@ -40,7 +40,6 @@ from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.request_validator import RequestValidator
 
-from azure.identity import DefaultAzureCredential
 from azure.data.tables import TableServiceClient
 from azure.core.exceptions import ResourceNotFoundError, ResourceExistsError
 
@@ -55,6 +54,15 @@ import phonenumbers
 
 # ──────────────────── Flask & CORS ─────────────────────────────────────────
 app = Flask(__name__)  # gunicorn target → bridge_app:app
+
+_started_once = False
+
+@app.before_request
+def _kick_once() -> None:
+    global _started_once
+    if not _started_once:
+        _started_once = True
+        start_background_polling()
 
 ALLOWED_ORIGINS = {
     "https://northvanupdates.com",
@@ -98,7 +106,6 @@ ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
 FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")  # E.164, e.g., +1778XXXXXXX
 
-TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")  # https://<acct>.table.core.windows.net
 AZURE_CONN      = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))
@@ -163,9 +170,6 @@ _poll_id = uuid.uuid4().hex
 
 # ──────────────────── Azure Table helpers ──────────────────────────────────
 def _get_table_service():
-    if TABLES_ENDPOINT:
-        cred = DefaultAzureCredential()
-        return TableServiceClient(endpoint=TABLES_ENDPOINT, credential=cred)
     if AZURE_CONN:
         return TableServiceClient.from_connection_string(AZURE_CONN)
     return None
@@ -173,7 +177,7 @@ def _get_table_service():
 def _require_table_client(name: str):
     svc = _get_table_service()
     if not svc:
-        raise RuntimeError("Azure Table storage not configured: set TABLES_ENDPOINT or AZURE_STORAGE_CONNECTION_STRING")
+        raise RuntimeError("Azure Table storage not configured: set AZURE_STORAGE_CONNECTION_STRING")
     try:
         svc.create_table_if_not_exists(name)
     except Exception:
@@ -302,7 +306,7 @@ def _assert_canadian_mobile(client: Client, e164: str):
         raise RuntimeError("Mobile/SMS-capable numbers only.")
 
     try:
-        info = client.lookups.v2.phone_numbers(e164).fetch(type=["carrier"])
+        info = client.lookups.v2.phone_numbers(e164).fetch(fields="carrier")
     except Exception as e:
         try:
             from twilio.base.exceptions import TwilioRestException
@@ -329,7 +333,7 @@ def send_sms(body: str, to: str) -> str:
     except Exception as e:
         # Enrich the error with a Lookup snapshot for support/debugging
         try:
-            info = client.lookups.v2.phone_numbers(to).fetch(type=["carrier"])
+            info = client.lookups.v2.phone_numbers(to).fetch(fields="carrier")
             print("LOOKUP SNAPSHOT:", to,
                   getattr(info, "country_code", None),
                   (getattr(info, "carrier", None) or {}).get("type"),
@@ -691,15 +695,6 @@ def start_background_polling():
         release_lock()
 
     threading.Thread(target=loop, daemon=True).start()
-
-# Start on first request AND on first worker boot (no request needed)
-@app.before_request
-def _start_polling_on_request() -> None:
-    start_background_polling()
-
-@app.before_first_request
-def _start_polling_on_boot() -> None:
-    start_background_polling()
 
 # ──────────────────── Utilities ────────────────────────────────────────────
 def parse_windows(s: str):
