@@ -94,8 +94,6 @@ GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
 ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
 FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
-API_KEY      = os.getenv("TWILIO_API_KEY")
-API_SECRET   = os.getenv("TWILIO_API_SECRET")
 
 TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")  # https://<acct>.table.core.windows.net
 AZURE_CONN      = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
@@ -271,22 +269,8 @@ def get_user_settings():
     return load_user_settings()
 
 # ──────────────────── Twilio helpers ───────────────────────────────────────
-def _twilio_client() -> Client:
-    """Return a Twilio client using either auth token or API key creds."""
-    if ACCOUNT_SID and AUTH_TOKEN:
-        # Legacy auth token credentials (most deployments)
-        return Client(ACCOUNT_SID, AUTH_TOKEN)
-    if API_KEY and API_SECRET and ACCOUNT_SID:
-        # Optional API key/secret authentication
-        return Client(API_KEY, API_SECRET, ACCOUNT_SID)
-    raise RuntimeError(
-        "Twilio credentials not configured: set TWILIO_ACCOUNT_SID with "
-        "TWILIO_AUTH_TOKEN or TWILIO_API_KEY/TWILIO_API_SECRET"
-    )
-
-
 def send_sms(body: str, to: str) -> str:
-    client = _twilio_client()
+    client = Client(ACCOUNT_SID, AUTH_TOKEN)
     msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
     return msg.sid
 
