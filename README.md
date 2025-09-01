@@ -16,8 +16,6 @@ Set the following variables before running the app:
 - `TWILIO_ACCOUNT_SID` – Twilio account SID used to send SMS.
 - `TWILIO_AUTH_TOKEN` – Twilio auth token used to authenticate API requests.
 - `TWILIO_FROM_NUMBER` – The Twilio phone number that sends the alerts.
-- `TWILIO_TO_NUMBERS` – Comma-separated list of recipient numbers for the
-  monitor when running without per-user settings.
 - `JWT_SECRET`/`OTP_SIGNING_KEY` – Secret used to sign OTP login tokens.
 - `ENABLE_POLLING` – Set to `0` to disable the background polling thread.
 - `POLL_INTERVAL` – Interval in seconds between delay checks. Defaults to
@@ -65,7 +63,6 @@ docker run -p 80:8000 \
   -e TWILIO_ACCOUNT_SID=... \
   -e TWILIO_AUTH_TOKEN=... \
   -e TWILIO_FROM_NUMBER=... \
-  -e TWILIO_TO_NUMBERS=... \
   -e JWT_SECRET=... \
   bridgedelay
 ```

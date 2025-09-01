@@ -116,6 +116,14 @@ OTP_LOCK_MIN         = 10
 
 TWILIO_VALIDATE = os.getenv("TWILIO_VALIDATE", "1").lower() not in ("0", "false", "no")
 
+# Fail fast if required API credentials are missing.
+if not GOOGLE_KEY:
+    raise RuntimeError("GOOGLE_MAPS_API_KEY is required")
+if not (ACCOUNT_SID and AUTH_TOKEN and FROM_NUMBER):
+    raise RuntimeError(
+        "Twilio configuration incomplete: set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER"
+    )
+
 ROUTES_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
 HEADERS = {
     "Content-Type": "application/json",
@@ -217,7 +225,14 @@ def get_delays() -> Dict[str, Dict[str, int]]:
         "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
     }
     r = requests.post(ROUTES_URL, headers=HEADERS, json=body, timeout=10)
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        try:
+            detail = r.json().get("error", {}).get("message", "")
+        except Exception:
+            detail = r.text
+        raise RuntimeError(f"Routes API {r.status_code}: {detail}") from e
     items = r.json()
     by_idx = {(it["originIndex"], it["destinationIndex"]): it for it in items}
     nb = by_idx[(0, 0)]
