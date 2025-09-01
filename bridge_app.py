@@ -19,6 +19,8 @@ import re
 import threading
 import secrets
 import hashlib
+import uuid
+import atexit
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -41,7 +43,7 @@ from twilio.request_validator import RequestValidator
 
 from azure.identity import DefaultAzureCredential
 from azure.data.tables import TableServiceClient
-from azure.core.exceptions import ResourceNotFoundError
+from azure.core.exceptions import ResourceNotFoundError, ResourceExistsError
 
 from zoneinfo import ZoneInfo
 
@@ -153,6 +155,11 @@ DEFAULT_WINDOWS   = [
 
 SEV_EMOJI = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
 
+# Distributed poller lock
+LOCK_PARTITION = "lock"
+LOCK_ROW = "poller"
+_poll_id = uuid.uuid4().hex
+
 # ──────────────────── Azure Table helpers ──────────────────────────────────
 def _get_table_service():
     if TABLES_ENDPOINT:
@@ -212,42 +219,38 @@ def _latlng(pair):
     return {"latLng": {"latitude": lat, "longitude": lng}}
 
 def get_delays() -> Dict[str, Dict[str, int]]:
-    body: Dict[str, Any] = {
-        "origins": [
-            {"waypoint": {"location": _latlng(NB_START)}},
-            {"waypoint": {"location": _latlng(SB_START)}},
-        ],
-        "destinations": [
-            {"waypoint": {"location": _latlng(NB_END)}},
-            {"waypoint": {"location": _latlng(SB_END)}},
-        ],
-        "travelMode": "DRIVE",
-        "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
-    }
-    r = requests.post(ROUTES_URL, headers=HEADERS, json=body, timeout=10)
-    try:
-        r.raise_for_status()
-    except requests.HTTPError as e:
-        try:
-            detail = r.json().get("error", {}).get("message", "")
-        except Exception:
-            detail = r.text
-        raise RuntimeError(f"Routes API {r.status_code}: {detail}") from e
-    items = r.json()
-    by_idx = {(it["originIndex"], it["destinationIndex"]): it for it in items}
-    nb = by_idx[(0, 0)]
-    sb = by_idx[(1, 1)]
-
     def to_min(seconds_str: str) -> float:
         return float(seconds_str.rstrip("s")) / 60.0
 
     def build(elem, fallback_base_min: int):
         live_min = to_min(elem["duration"])
-        base_min = to_min(elem["staticDuration"]) if "staticDuration" in elem else float(fallback_base_min)
+        base_min = to_min(elem.get("staticDuration", f"{fallback_base_min * 60}s"))
         delay_min = max(0.0, live_min - base_min)
         return {"live": round(live_min), "base": round(base_min), "delay": round(delay_min)}
 
-    return {"NB": build(nb, NB_BASE_MIN), "SB": build(sb, SB_BASE_MIN)}
+    def fetch(origin, dest, fallback_base_min: int) -> Dict[str, int]:
+        body: Dict[str, Any] = {
+            "origins": [{"waypoint": {"location": _latlng(origin)}}],
+            "destinations": [{"waypoint": {"location": _latlng(dest)}}],
+            "travelMode": "DRIVE",
+            "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
+        }
+        r = requests.post(ROUTES_URL, headers=HEADERS, json=body, timeout=10)
+        try:
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            try:
+                detail = r.json().get("error", {}).get("message", "")
+            except Exception:
+                detail = r.text
+            raise RuntimeError(f"Routes API {r.status_code}: {detail}") from e
+        item = r.json()[0]
+        return build(item, fallback_base_min)
+
+    return {
+        "NB": fetch(NB_START, NB_END, NB_BASE_MIN),
+        "SB": fetch(SB_START, SB_END, SB_BASE_MIN),
+    }
 
 # ──────────────────── Persistence: users ───────────────────────────────────
 def load_user_settings() -> List[Dict[str, Any]]:
@@ -531,6 +534,7 @@ def _broadcast_delays(current: Dict[str, Dict[str, int]], direction: str, first_
 # ──────────────────── Background poller ────────────────────────────────────
 _poll_lock = threading.Lock()
 _poll_started = False
+
 def start_background_polling():
     global _poll_started
     if _poll_started:
@@ -539,6 +543,48 @@ def start_background_polling():
     if not ENABLE_POLLING or POLL_INTERVAL <= 0:
         print("Background polling disabled.")
         return
+
+    tc = _require_table_client(STATE_TABLE)
+    now = int(time.time())
+    expire = now + POLL_INTERVAL * 2
+    lock_entity = {
+        "PartitionKey": LOCK_PARTITION,
+        "RowKey": LOCK_ROW,
+        "owner": _poll_id,
+        "expiresAt": expire,
+    }
+    try:
+        tc.create_entity(lock_entity)
+    except ResourceExistsError:
+        try:
+            ent = tc.get_entity(LOCK_PARTITION, LOCK_ROW)
+            if now > int(ent.get("expiresAt", 0)):
+                try:
+                    tc.delete_entity(LOCK_PARTITION, LOCK_ROW)
+                    tc.create_entity(lock_entity)
+                except Exception:
+                    print("Another poller active; skipping.")
+                    return
+            else:
+                print("Another poller active; skipping.")
+                return
+        except ResourceNotFoundError:
+            try:
+                tc.create_entity(lock_entity)
+            except Exception:
+                print("Another poller active; skipping.")
+                return
+
+    def release_lock() -> None:
+        try:
+            ent = tc.get_entity(LOCK_PARTITION, LOCK_ROW)
+            if ent.get("owner") == _poll_id:
+                tc.delete_entity(LOCK_PARTITION, LOCK_ROW)
+        except Exception:
+            pass
+
+    atexit.register(release_lock)
+
     def loop():
         while True:
             with _poll_lock:
@@ -546,7 +592,17 @@ def start_background_polling():
                     check_and_notify()
                 except Exception as e:
                     print("Polling error:", e)
+            try:
+                ent = tc.get_entity(LOCK_PARTITION, LOCK_ROW)
+                if ent.get("owner") != _poll_id:
+                    break
+                ent["expiresAt"] = int(time.time()) + POLL_INTERVAL * 2
+                tc.upsert_entity(ent)
+            except Exception:
+                break
             time.sleep(POLL_INTERVAL)
+        release_lock()
+
     threading.Thread(target=loop, daemon=True).start()
 
 @app.before_request
