@@ -236,14 +236,12 @@ def get_delays() -> Dict[str, Dict[str, int]]:
             "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
         }
         r = requests.post(ROUTES_URL, headers=HEADERS, json=body, timeout=10)
-        try:
-            r.raise_for_status()
-        except requests.HTTPError as e:
+        if not r.ok:
             try:
                 detail = r.json().get("error", {}).get("message", "")
             except Exception:
                 detail = r.text
-            raise RuntimeError(f"Routes API {r.status_code}: {detail}") from e
+            raise RuntimeError(f"Routes API {r.status_code}: {detail}")
         item = r.json()[0]
         return build(item, fallback_base_min)
 
@@ -289,7 +287,18 @@ def get_user_settings():
 # ──────────────────── Twilio helpers ───────────────────────────────────────
 def send_sms(body: str, to: str) -> str:
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
-    msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
+    try:
+        msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
+    except Exception as e:
+        try:
+            from twilio.base.exceptions import TwilioRestException
+        except Exception:  # pragma: no cover - import failure unlikely
+            TwilioRestException = Exception  # type: ignore
+        if isinstance(e, TwilioRestException):
+            status = getattr(e, "status", "")
+            message = getattr(e, "msg", str(e))
+            raise RuntimeError(f"Twilio error {status}: {message}") from e
+        raise
     return msg.sid
 
 def _twilio_request_url(req):
@@ -797,6 +806,8 @@ def sms_webhook():
 
     body_raw = request.form.get("Body", "").strip()
     parts    = body_raw.upper().split() if body_raw else ["HELP"]
+    if parts:
+        parts[0] = re.sub(r"[^A-Z]", "", parts[0])
     args = parts[1:]
 
     users = get_user_settings()
@@ -835,16 +846,30 @@ def sms_webhook():
         return Response(str(resp), mimetype="application/xml")
 
     if parts[0] == "STATUS":
+        msg: str
         try:
-            delays = get_delays()
-            nb, sb = delays["NB"], delays["SB"]
+            tc = _require_table_client(STATE_TABLE)
+            ent = tc.get_entity(partition_key="state", row_key="latest")
+            data = json.loads(ent.get("data", "{}") or "{}")
+            poll = data.get("poll", data)
+            nb_delay = poll["NB"]["delay"]
+            sb_delay = poll["SB"]["delay"]
             msg = (
                 "🚦 Lions Gate update\n"
-                f"Northbound delay: {nb['delay']}m\n"
-                f"Southbound delay: {sb['delay']}m"
+                f"Northbound delay: {nb_delay}m\n"
+                f"Southbound delay: {sb_delay}m"
             )
         except Exception:
-            msg = "⚠️ Couldn’t fetch delay right now."
+            try:
+                delays = get_delays()
+                nb, sb = delays["NB"], delays["SB"]
+                msg = (
+                    "🚦 Lions Gate update\n"
+                    f"Northbound delay: {nb['delay']}m\n"
+                    f"Southbound delay: {sb['delay']}m"
+                )
+            except Exception:
+                msg = "⚠️ Couldn’t fetch delay right now."
         resp.message(msg)
         return Response(str(resp), mimetype="application/xml")
 
