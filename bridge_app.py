@@ -1004,3 +1004,16 @@ if __name__ == "__main__":
             except Exception as e:
                 print("Polling error:", e)
             time.sleep(300)
+
+
+@app.route("/dev/sms", methods=["POST"])
+def dev_sms():
+    to = request.form.get("to", "").strip()
+    body = request.form.get("body", "BridgeDelay test")
+    try:
+        sid = send_sms(body, normalize_phone(to))
+        return {"ok": True, "sid": sid}, 200
+    except Exception as e:
+        import traceback
+        return {"ok": False, "error": str(e), "trace": traceback.format_exc()}, 500
+
