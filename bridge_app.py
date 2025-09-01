@@ -94,8 +94,6 @@ GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
 ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
 FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
-API_KEY      = os.getenv("TWILIO_API_KEY")
-API_SECRET   = os.getenv("TWILIO_API_SECRET")
 
 TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")  # https://<acct>.table.core.windows.net
 AZURE_CONN      = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
@@ -117,6 +115,14 @@ OTP_MAX_ATTEMPTS     = 6
 OTP_LOCK_MIN         = 10
 
 TWILIO_VALIDATE = os.getenv("TWILIO_VALIDATE", "1").lower() not in ("0", "false", "no")
+
+# Fail fast if required API credentials are missing.
+if not GOOGLE_KEY:
+    raise RuntimeError("GOOGLE_MAPS_API_KEY is required")
+if not (ACCOUNT_SID and AUTH_TOKEN and FROM_NUMBER):
+    raise RuntimeError(
+        "Twilio configuration incomplete: set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER"
+    )
 
 ROUTES_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
 HEADERS = {
@@ -219,7 +225,14 @@ def get_delays() -> Dict[str, Dict[str, int]]:
         "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
     }
     r = requests.post(ROUTES_URL, headers=HEADERS, json=body, timeout=10)
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        try:
+            detail = r.json().get("error", {}).get("message", "")
+        except Exception:
+            detail = r.text
+        raise RuntimeError(f"Routes API {r.status_code}: {detail}") from e
     items = r.json()
     by_idx = {(it["originIndex"], it["destinationIndex"]): it for it in items}
     nb = by_idx[(0, 0)]
@@ -271,22 +284,8 @@ def get_user_settings():
     return load_user_settings()
 
 # ──────────────────── Twilio helpers ───────────────────────────────────────
-def _twilio_client() -> Client:
-    """Return a Twilio client using either auth token or API key creds."""
-    if ACCOUNT_SID and AUTH_TOKEN:
-        # Legacy auth token credentials (most deployments)
-        return Client(ACCOUNT_SID, AUTH_TOKEN)
-    if API_KEY and API_SECRET and ACCOUNT_SID:
-        # Optional API key/secret authentication
-        return Client(API_KEY, API_SECRET, ACCOUNT_SID)
-    raise RuntimeError(
-        "Twilio credentials not configured: set TWILIO_ACCOUNT_SID with "
-        "TWILIO_AUTH_TOKEN or TWILIO_API_KEY/TWILIO_API_SECRET"
-    )
-
-
 def send_sms(body: str, to: str) -> str:
-    client = _twilio_client()
+    client = Client(ACCOUNT_SID, AUTH_TOKEN)
     msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
     return msg.sid
 
