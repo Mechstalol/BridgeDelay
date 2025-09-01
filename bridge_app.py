@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 BridgeDelay — unified Maps-API + SMS webhook (+ OTP login)
-----------------------------------------------------------
-Azure-only (no local file fallbacks).
-CORS fixed for all /api/* endpoints (OPTIONS + response headers).
-No ETag compare-and-swap (works with Cosmos Table + classic Table).
-Notify when severity changes OR delay jump ≥ NOTIFY_MIN_STEP minutes from last alert.
-Message shows only delays (no base/live).
+
+Changes in this version:
+- Enforce Canada-only + SMS-capable numbers at signup and before OTP.
+- Keep raw-number sending (no Messaging Service).
+- Add Lookup logging when Twilio send fails to speed up support.
 """
 
 from __future__ import annotations
@@ -97,7 +96,7 @@ def any_api_options(_any):
 GOOGLE_KEY   = os.getenv("GOOGLE_MAPS_API_KEY")
 ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
-FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")
+FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")  # E.164, e.g., +1778XXXXXXX
 
 TABLES_ENDPOINT = os.getenv("TABLES_ENDPOINT")  # https://<acct>.table.core.windows.net
 AZURE_CONN      = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
@@ -288,26 +287,33 @@ def get_user_settings():
 
 # ──────────────────── Twilio helpers ───────────────────────────────────────
 def _assert_canadian_mobile(client: Client, e164: str):
+    """
+    Raises RuntimeError unless the number is Canadian and SMS-capable (mobile/voip).
+    Uses libphonenumber quick checks + Twilio Lookup (carrier).
+    """
     try:
         pn = phonenumbers.parse(e164, None)
     except phonenumbers.NumberParseException as e:
         raise RuntimeError("invalid phone") from e
+
     if phonenumbers.region_code_for_number(pn) != "CA" or not phonenumbers.is_valid_number(pn):
         raise RuntimeError("Canada-only phone numbers.")
     if phonenumbers.number_type(pn) == phonenumbers.PhoneNumberType.FIXED_LINE:
         raise RuntimeError("Mobile/SMS-capable numbers only.")
+
     try:
         info = client.lookups.v2.phone_numbers(e164).fetch(type=["carrier"])
     except Exception as e:
         try:
             from twilio.base.exceptions import TwilioRestException
-        except Exception:  # pragma: no cover
+        except Exception:
             TwilioRestException = Exception  # type: ignore
         if isinstance(e, TwilioRestException):
             status = getattr(e, "status", "")
             message = getattr(e, "msg", str(e))
             raise RuntimeError(f"Twilio lookup error {status}: {message}") from e
         raise
+
     if getattr(info, "country_code", "").upper() != "CA":
         raise RuntimeError("Canada-only phone numbers.")
     carrier_type = (getattr(info, "carrier", None) or {}).get("type")
@@ -318,8 +324,18 @@ def send_sms(body: str, to: str) -> str:
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
     _assert_canadian_mobile(client, to)
     try:
+        # Send directly from your Canadian long code (raw number)
         msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
     except Exception as e:
+        # Enrich the error with a Lookup snapshot for support/debugging
+        try:
+            info = client.lookups.v2.phone_numbers(to).fetch(type=["carrier"])
+            print("LOOKUP SNAPSHOT:", to,
+                  getattr(info, "country_code", None),
+                  (getattr(info, "carrier", None) or {}).get("type"),
+                  (getattr(info, "carrier", None) or {}).get("name"))
+        except Exception:
+            pass
         try:
             from twilio.base.exceptions import TwilioRestException
         except Exception:  # pragma: no cover - import failure unlikely
@@ -704,6 +720,13 @@ def signup():
     except ValueError:
         abort(400, "invalid phone")
 
+    # ⬇️ NEW: validate at signup so only CA mobile/voip get stored
+    try:
+        client = Client(ACCOUNT_SID, AUTH_TOKEN)
+        _assert_canadian_mobile(client, phone)
+    except Exception:
+        abort(400, "We only support Canadian mobile numbers.")
+
     users = get_user_settings()
     if any(u["phone"] == phone for u in users):
         return {"msg": "already registered"}, 200
@@ -734,7 +757,16 @@ def otp_start():
     try:
         phone = normalize_phone(raw)
     except ValueError:
+        # Soft success to avoid user enumeration
         return jsonify({"ok": True, "status": "sent"}), 200
+
+    # ⬇️ NEW: enforce CA mobile/voip before we ever send OTP
+    try:
+        client = Client(ACCOUNT_SID, AUTH_TOKEN)
+        _assert_canadian_mobile(client, phone)
+    except Exception:
+        return jsonify({"ok": True, "status": "sent"}), 200  # pretend sent; do not actually send
+
     if not any(u["phone"] == phone for u in get_user_settings()):
         return jsonify({"ok": True, "status": "sent"}), 200
     ok, status2 = otp_issue_and_send(phone)
