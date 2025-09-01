@@ -800,109 +800,133 @@ def sms_webhook():
     if TWILIO_VALIDATE and not _twilio_signature_ok(request):
         return Response("Forbidden", status=403)
 
-    from_number = request.form.get("From", "").strip()
-    if not from_number:
-        abort(400)
-
-    body_raw = request.form.get("Body", "").strip()
-    parts    = body_raw.upper().split() if body_raw else ["HELP"]
-    if parts:
-        parts[0] = re.sub(r"[^A-Z]", "", parts[0])
-    args = parts[1:]
-
-    users = get_user_settings()
-    user  = next((u for u in users if u["phone"] == from_number), None)
-    if not user:
-        user = {
-            "phone": from_number,
-            "active": True,
-            "threshold_nb": DEFAULT_THRESHOLD_NB,
-            "threshold_sb": DEFAULT_THRESHOLD_SB,
-            "windows": DEFAULT_WINDOWS,
-            "pausedUntil": 0,
-        }
-        users.append(user)
-
     resp = MessagingResponse()
-    now_sec = int(time.time())
+    try:
+        from_number = request.form.get("From", "").strip()
+        if not from_number:
+            abort(400)
 
-    if parts[0] == "PAUSE":
-        user["pausedUntil"] = now_sec + 3600  # 1 hour
-        save_user_settings(users)
-        resp.message("⏸️ Paused for 1 hour. Send REACTIVATE to resume sooner.")
-        return Response(str(resp), mimetype="application/xml")
+        body_raw = request.form.get("Body", "").strip()
+        parts    = body_raw.upper().split() if body_raw else ["HELP"]
+        if parts:
+            parts[0] = re.sub(r"[^A-Z]", "", parts[0])
+        args = parts[1:]
 
-    if parts[0] == "DEACTIVATE":
-        user["active"] = False
-        save_user_settings(users)
-        resp.message("🔕 Alerts deactivated. Send REACTIVATE to turn them back on.")
-        return Response(str(resp), mimetype="application/xml")
-
-    if parts[0] == "REACTIVATE":
-        user["active"] = True
-        user["pausedUntil"] = 0
-        save_user_settings(users)
-        resp.message("🔔 Alerts reactivated.")
-        return Response(str(resp), mimetype="application/xml")
-
-    if parts[0] == "STATUS":
-        msg: str
         try:
-            tc = _require_table_client(STATE_TABLE)
-            ent = tc.get_entity(partition_key="state", row_key="latest")
-            data = json.loads(ent.get("data", "{}") or "{}")
-            poll = data.get("poll", data)
-            nb_delay = poll["NB"]["delay"]
-            sb_delay = poll["SB"]["delay"]
-            msg = (
-                "🚦 Lions Gate update\n"
-                f"Northbound delay: {nb_delay}m\n"
-                f"Southbound delay: {sb_delay}m"
-            )
+            users = get_user_settings()
         except Exception:
+            users = []
+        user = next((u for u in users if u["phone"] == from_number), None)
+        if not user:
+            user = {
+                "phone": from_number,
+                "active": True,
+                "threshold_nb": DEFAULT_THRESHOLD_NB,
+                "threshold_sb": DEFAULT_THRESHOLD_SB,
+                "windows": DEFAULT_WINDOWS,
+                "pausedUntil": 0,
+            }
+            users.append(user)
+
+        now_sec = int(time.time())
+
+        if parts[0] == "PAUSE":
+            user["pausedUntil"] = now_sec + 3600  # 1 hour
             try:
-                delays = get_delays()
-                nb, sb = delays["NB"], delays["SB"]
+                save_user_settings(users)
+            except Exception:
+                pass
+            resp.message("⏸️ Paused for 1 hour. Send REACTIVATE to resume sooner.")
+            return Response(str(resp), mimetype="application/xml")
+
+        if parts[0] == "DEACTIVATE":
+            user["active"] = False
+            try:
+                save_user_settings(users)
+            except Exception:
+                pass
+            resp.message("🔕 Alerts deactivated. Send REACTIVATE to turn them back on.")
+            return Response(str(resp), mimetype="application/xml")
+
+        if parts[0] == "REACTIVATE":
+            user["active"] = True
+            user["pausedUntil"] = 0
+            try:
+                save_user_settings(users)
+            except Exception:
+                pass
+            resp.message("🔔 Alerts reactivated.")
+            return Response(str(resp), mimetype="application/xml")
+
+        if parts[0] == "STATUS":
+            msg: str
+            try:
+                tc = _require_table_client(STATE_TABLE)
+                ent = tc.get_entity(partition_key="state", row_key="latest")
+                data = json.loads(ent.get("data", "{}") or "{}")
+                poll = data.get("poll", data)
+                nb_delay = poll["NB"]["delay"]
+                sb_delay = poll["SB"]["delay"]
                 msg = (
                     "🚦 Lions Gate update\n"
-                    f"Northbound delay: {nb['delay']}m\n"
-                    f"Southbound delay: {sb['delay']}m"
+                    f"Northbound delay: {nb_delay}m\n"
+                    f"Southbound delay: {sb_delay}m"
                 )
             except Exception:
-                msg = "⚠️ Couldn’t fetch delay right now."
-        resp.message(msg)
-        return Response(str(resp), mimetype="application/xml")
+                try:
+                    delays = get_delays()
+                    nb, sb = delays["NB"], delays["SB"]
+                    msg = (
+                        "🚦 Lions Gate update\n"
+                        f"Northbound delay: {nb['delay']}m\n"
+                        f"Southbound delay: {sb['delay']}m"
+                    )
+                except Exception:
+                    msg = "⚠️ Couldn’t fetch delay right now."
+            resp.message(msg)
+            return Response(str(resp), mimetype="application/xml")
 
-    if parts[0] == "THRESHOLD":
-        if len(args) == 2 and args[0] in ("NB", "SB") and args[1].isdigit():
-            val = int(args[1])
-            if args[0] == "NB":
+        if parts[0] == "THRESHOLD":
+            if len(args) == 2 and args[0] in ("NB", "SB") and args[1].isdigit():
+                val = int(args[1])
+                if args[0] == "NB":
+                    user["threshold_nb"] = val
+                else:
+                    user["threshold_sb"] = val
+                try:
+                    save_user_settings(users)
+                except Exception:
+                    pass
+                resp.message(f"✅ {args[0]} threshold set to {val} minutes.")
+            elif len(args) == 1 and args[0].isdigit():
+                val = int(args[0])
                 user["threshold_nb"] = val
-            else:
                 user["threshold_sb"] = val
-            save_user_settings(users)
-            resp.message(f"✅ {args[0]} threshold set to {val} minutes.")
-        elif len(args) == 1 and args[0].isdigit():
-            val = int(args[0])
-            user["threshold_nb"] = val
-            user["threshold_sb"] = val
-            save_user_settings(users)
-            resp.message(f"✅ Threshold set to {val} minutes for NB and SB.")
+                try:
+                    save_user_settings(users)
+                except Exception:
+                    pass
+                resp.message(f"✅ Threshold set to {val} minutes for NB and SB.")
+            else:
+                resp.message("❌ Use THRESHOLD NB|SB <minutes> or THRESHOLD <minutes>.")
+        elif parts[0] == "WINDOW" and args:
+            try:
+                user["windows"] = parse_windows(" ".join(args))
+                try:
+                    save_user_settings(users)
+                except Exception:
+                    pass
+                win_str = ", ".join(f"{w['start']}-{w['end']} {w['dir']}" for w in user["windows"])
+                resp.message(f"✅ Windows set to {win_str}")
+            except ValueError:
+                resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR]")
+        elif parts[0] in ("LIST", "HELP"):
+            resp.message("Commands: STATUS | THRESHOLD NB/SB n | WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR] | PAUSE | DEACTIVATE | REACTIVATE")
         else:
-            resp.message("❌ Use THRESHOLD NB|SB <minutes> or THRESHOLD <minutes>.")
-    elif parts[0] == "WINDOW" and args:
-        try:
-            user["windows"] = parse_windows(" ".join(args))
-            save_user_settings(users)
-            win_str = ", ".join(f"{w['start']}-{w['end']} {w['dir']}" for w in user["windows"])
-            resp.message(f"✅ Windows set to {win_str}")
-        except ValueError:
-            resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR]")
-    elif parts[0] in ("LIST", "HELP"):
-        resp.message("Commands: STATUS | THRESHOLD NB/SB n | WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR] | PAUSE | DEACTIVATE | REACTIVATE")
-    else:
-        resp.message("Unknown command. Send HELP for options.")
+            resp.message("Unknown command. Send HELP for options.")
 
+    except Exception:
+        resp.message("⚠️ Error processing request.")
     return Response(str(resp), mimetype="application/xml")
 
 # ──────────────────── Entrypoint ───────────────────────────────────────────
