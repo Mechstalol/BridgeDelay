@@ -1054,3 +1054,8 @@ def dev_sms():
         import traceback
         return {"ok": False, "error": str(e), "trace": traceback.format_exc()}, 500
 
+@app.route("/dev/showkey")
+def dev_showkey():
+    import os
+    return {"GOOGLE_MAPS_API_KEY": os.getenv("GOOGLE_MAPS_API_KEY")}
+
