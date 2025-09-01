@@ -13,6 +13,7 @@ cleanup() {
     kill "${gunicorn_pid}" 2>/dev/null || true
     wait "${gunicorn_pid}" 2>/dev/null || true
     gunicorn_pid=""
+
   fi
   if [[ -n "${poller_pid}" ]]; then
     echo "[run.sh] stopping poller"
@@ -23,6 +24,7 @@ cleanup() {
 }
 
 trap cleanup TERM INT
+
 
 start_poller() {
   if [[ "${ENABLE_POLLING:-1}" != "0" ]]; then
