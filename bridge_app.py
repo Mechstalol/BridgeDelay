@@ -293,7 +293,7 @@ def get_user_settings():
 def _assert_canadian_mobile(client: Client, e164: str):
     """
     Raises RuntimeError unless the number is Canadian and SMS-capable (mobile/voip).
-    Uses libphonenumber quick checks + Twilio Lookup (carrier).
+    Uses libphonenumber quick checks + Twilio Lookup (line_type_intelligence in v2).
     """
     try:
         pn = phonenumbers.parse(e164, None)
@@ -306,7 +306,8 @@ def _assert_canadian_mobile(client: Client, e164: str):
         raise RuntimeError("Mobile/SMS-capable numbers only.")
 
     try:
-        info = client.lookups.v2.phone_numbers(e164).fetch(fields="carrier")
+        # v2 Lookups: request line type intelligence
+        info = client.lookups.v2.phone_numbers(e164).fetch(fields="line_type_intelligence")
     except Exception as e:
         try:
             from twilio.base.exceptions import TwilioRestException
@@ -320,8 +321,9 @@ def _assert_canadian_mobile(client: Client, e164: str):
 
     if getattr(info, "country_code", "").upper() != "CA":
         raise RuntimeError("Canada-only phone numbers.")
-    carrier_type = (getattr(info, "carrier", None) or {}).get("type")
-    if carrier_type and carrier_type.lower() == "landline":
+    lti = getattr(info, "line_type_intelligence", None) or {}
+    carrier_type = (lti.get("type") or "").lower()  # "mobile", "landline", "voip", etc.
+    if carrier_type == "landline":
         raise RuntimeError("Mobile/SMS-capable numbers only.")
 
 def send_sms(body: str, to: str) -> str:
@@ -333,11 +335,12 @@ def send_sms(body: str, to: str) -> str:
     except Exception as e:
         # Enrich the error with a Lookup snapshot for support/debugging
         try:
-            info = client.lookups.v2.phone_numbers(to).fetch(fields="carrier")
+            info = client.lookups.v2.phone_numbers(to).fetch(fields="line_type_intelligence")
+            lti = getattr(info, "line_type_intelligence", None) or {}
             print("LOOKUP SNAPSHOT:", to,
                   getattr(info, "country_code", None),
-                  (getattr(info, "carrier", None) or {}).get("type"),
-                  (getattr(info, "carrier", None) or {}).get("name"))
+                  lti.get("type"),
+                  lti.get("carrier_name"))
         except Exception:
             pass
         try:
@@ -1053,4 +1056,3 @@ def dev_sms():
 def dev_showkey():
     import os
     return {"GOOGLE_MAPS_API_KEY": os.getenv("GOOGLE_MAPS_API_KEY")}
-
