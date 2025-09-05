@@ -552,6 +552,14 @@ def check_and_notify():
             to_send.append(direction)
             first_flags[direction] = _is_first_window(direction, now_sec, last_dir_at)
 
+    # ── NEW: Global direction filter based on DEFAULT_WINDOWS (morning SB, evening NB)
+    now_hhmm_str = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
+    allowed_dirs = _global_allowed_dirs(now_hhmm_str)
+    if allowed_dirs:
+        to_send = [d for d in to_send if d in allowed_dirs]
+    else:
+        to_send = []  # outside any defined window → suppress all
+
     if not to_send:
         _state_save(tc, state)
         return
@@ -700,6 +708,20 @@ def start_background_polling():
     threading.Thread(target=loop, daemon=True).start()
 
 # ──────────────────── Utilities ────────────────────────────────────────────
+def _global_allowed_dirs(now_hhmm: str) -> set[str]:
+    """
+    Derive which directions are globally allowed *right now* from DEFAULT_WINDOWS.
+    If now is inside any window(s), allow only those directions.
+    If now is outside all windows, return an empty set (suppress sends globally).
+    """
+    dirs: set[str] = set()
+    for w in DEFAULT_WINDOWS:
+        if w["start"] <= now_hhmm <= w["end"]:
+            d = w.get("dir")
+            if d in ("NB", "SB"):
+                dirs.add(d)
+    return dirs
+
 def parse_windows(s: str):
     parts = [p.strip() for p in s.split(",") if p.strip()]
     if len(parts) > 2:
