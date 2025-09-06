@@ -345,7 +345,7 @@ def send_sms(body: str, to: str) -> str:
             pass
         try:
             from twilio.base.exceptions import TwilioRestException
-        except Exception:  # pragma: no cover - import failure unlikely
+        except Exception:  # pragma: no cover
             TwilioRestException = Exception  # type: ignore
         if isinstance(e, TwilioRestException):
             status = getattr(e, "status", "")
@@ -548,39 +548,60 @@ def check_and_notify():
     first_flags: Dict[str, bool] = {}
     for direction in ("NB", "SB"):
         last_dir_at = int(last_at.get(direction, 0))
-        if last_msg.get(direction) and (now_sec - last_dir_at) >= NOTIFY_MIN_GAP_SEC and _should_notify(last_msg, current, direction):
-            to_send.append(direction)
-            first_flags[direction] = _is_first_window(direction, now_sec, last_dir_at)
 
-    # ── NEW: Global direction filter based on DEFAULT_WINDOWS (morning SB, evening NB)
+        # first send at the start of this direction's window
+        first_in_win = _is_first_window(direction, now_sec, last_dir_at)
+
+        # change-based sends (requires a previous)
+        change_based = (
+            last_msg.get(direction)
+            and (now_sec - last_dir_at) >= NOTIFY_MIN_GAP_SEC
+            and _should_notify(last_msg, current, direction)
+        )
+
+        if first_in_win or change_based:
+            to_send.append(direction)
+            first_flags[direction] = first_in_win
+
+    # Global morning/evening gating: inside DEFAULT_WINDOWS restrict,
+    # outside allow both directions to proceed
     now_hhmm_str = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
     allowed_dirs = _global_allowed_dirs(now_hhmm_str)
     if allowed_dirs:
         to_send = [d for d in to_send if d in allowed_dirs]
-    else:
-        to_send = []  # outside any defined window → suppress all
 
     if not to_send:
         _state_save(tc, state)
         return
 
+    # Broadcast and only then update state for the directions that actually sent at least one SMS
+    sent_dirs: List[str] = []
     for direction in to_send:
-        last_msg[direction] = current[direction]
-        last_at[direction] = now_sec
-    state["last_sent"] = last_msg
-    state["last_sent_at"] = last_at
+        sent_any = _broadcast_delays(current, direction, first_flags.get(direction, False))
+        if sent_any:
+            sent_dirs.append(direction)
+
+    if sent_dirs:
+        for direction in sent_dirs:
+            last_msg[direction] = current[direction]
+            last_at[direction] = now_sec
+        state["last_sent"] = last_msg
+        state["last_sent_at"] = last_at
+    # Always save the latest poll snapshot
     _state_save(tc, state)
 
-    for direction in to_send:
-        _broadcast_delays(current, direction, first_flags.get(direction, False))
-
-def _broadcast_delays(current: Dict[str, Dict[str, int]], direction: str, first_in_window: bool):
+def _broadcast_delays(current: Dict[str, Dict[str, int]], direction: str, first_in_window: bool) -> bool:
+    """
+    Send notifications for a direction to all eligible users.
+    Returns True if at least one SMS was sent, else False.
+    """
     now_str = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
     now_sec = int(time.time())
 
     data = current[direction]
     label = "Northbound" if direction == "NB" else "Southbound"
 
+    sent_any = False
     for u in get_user_settings():
         if not u.get("active", True):
             continue
@@ -600,6 +621,9 @@ def _broadcast_delays(current: Dict[str, Dict[str, int]], direction: str, first_
             body += "\nReply PAUSE to pause alerts."
         sid = send_sms(body, u["phone"])
         print(f"🔔 Sent to {u['phone']}: {sid}")
+        sent_any = True
+
+    return sent_any
 
 # ──────────────────── Background poller (fixed lock + retry) ───────────────
 _poll_lock = threading.Lock()
@@ -628,7 +652,6 @@ def start_background_polling():
     # Try to acquire/refresh the lock atomically
     acquired = False
     try:
-        # First attempt: create (will fail if exists)
         tc.create_entity({
             "PartitionKey": LOCK_PARTITION,
             "RowKey": LOCK_ROW,
@@ -643,17 +666,14 @@ def start_background_polling():
             holder = ent.get("owner")
             ttl = int(ent.get("expiresAt", 0))
             if now > ttl:
-                # Lock expired → steal by upserting (no delete race)
                 ent["owner"] = _poll_id
                 ent["expiresAt"] = expire
                 tc.upsert_entity(ent)
                 acquired = True
                 print(f"[poll] lock expired; stolen by {_poll_id} (was {holder})")
             else:
-                # Someone else is active; do NOT flip _poll_started — retry later
                 print(f"[poll] another instance active ({holder}); retrying in 30s")
         except ResourceNotFoundError:
-            # Race: it vanished between create+get → retry create once
             try:
                 tc.create_entity({
                     "PartitionKey": LOCK_PARTITION,
@@ -667,11 +687,9 @@ def start_background_polling():
                 print(f"[poll] lock create race failed; retrying in 30s: {e}")
 
     if not acquired:
-        # schedule a retry; don’t mark started
         threading.Timer(30, start_background_polling).start()
         return
 
-    # From here, we actually own the lock ⇒ now we can mark started
     _poll_started = True
 
     def release_lock() -> None:
@@ -710,9 +728,9 @@ def start_background_polling():
 # ──────────────────── Utilities ────────────────────────────────────────────
 def _global_allowed_dirs(now_hhmm: str) -> set[str]:
     """
-    Derive which directions are globally allowed *right now* from DEFAULT_WINDOWS.
+    Which directions are globally allowed *right now* from DEFAULT_WINDOWS.
     If now is inside any window(s), allow only those directions.
-    If now is outside all windows, return an empty set (suppress sends globally).
+    If outside all windows, return empty → meaning "allow both".
     """
     dirs: set[str] = set()
     for w in DEFAULT_WINDOWS:
@@ -1026,23 +1044,21 @@ def sms_webhook():
                 except Exception:
                     pass
                 resp.message(f"✅ Threshold set to {val} minutes for NB and SB.")
-            else:
-                resp.message("❌ Use THRESHOLD NB|SB <minutes> or THRESHOLD <minutes>.")
-        elif parts[0] == "WINDOW" and args:
-            try:
-                user["windows"] = parse_windows(" ".join(args))
+            elif parts[0] == "WINDOW" and args:
                 try:
-                    save_user_settings(users)
-                except Exception:
-                    pass
-                win_str = ", ".join(f"{w['start']}-{w['end']} {w['dir']}" for w in user["windows"])
-                resp.message(f"✅ Windows set to {win_str}")
-            except ValueError:
-                resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR]")
-        elif parts[0] in ("LIST", "HELP"):
-            resp.message("Commands: STATUS | THRESHOLD NB/SB n | WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR] | PAUSE | DEACTIVATE | REACTIVATE")
-        else:
-            resp.message("Unknown command. Send HELP for options.")
+                    user["windows"] = parse_windows(" ".join(args))
+                    try:
+                        save_user_settings(users)
+                    except Exception:
+                        pass
+                    win_str = ", ".join(f"{w['start']}-{w['end']} {w['dir']}" for w in user["windows"])
+                    resp.message(f"✅ Windows set to {win_str}")
+                except ValueError:
+                    resp.message("❌ Invalid format. Use: WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR]")
+            elif parts[0] in ("LIST", "HELP"):
+                resp.message("Commands: STATUS | THRESHOLD NB/SB n | WINDOW HH:MM-HH:MM DIR[,HH:MM-HH:MM DIR] | PAUSE | DEACTIVATE | REACTIVATE")
+            else:
+                resp.message("Unknown command. Send HELP for options.")
 
     except Exception:
         resp.message("⚠️ Error processing request.")
