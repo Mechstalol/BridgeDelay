@@ -59,6 +59,7 @@ _started_once = False
 
 @app.before_request
 def _kick_once() -> None:
+    """Legacy backup: start poller on first HTTP request."""
     global _started_once
     if not _started_once:
         _started_once = True
@@ -106,7 +107,7 @@ ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
 FROM_NUMBER  = os.getenv("TWILIO_FROM_NUMBER")  # E.164, e.g., +1778XXXXXXX
 
-AZURE_CONN      = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+AZURE_CONN   = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))
 ENABLE_POLLING = os.getenv("ENABLE_POLLING", "1").lower() not in ("0", "false", "no")
@@ -306,7 +307,6 @@ def _assert_canadian_mobile(client: Client, e164: str):
         raise RuntimeError("Mobile/SMS-capable numbers only.")
 
     try:
-        # v2 Lookups: request line type intelligence
         info = client.lookups.v2.phone_numbers(e164).fetch(fields="line_type_intelligence")
     except Exception as e:
         try:
@@ -322,7 +322,7 @@ def _assert_canadian_mobile(client: Client, e164: str):
     if getattr(info, "country_code", "").upper() != "CA":
         raise RuntimeError("Canada-only phone numbers.")
     lti = getattr(info, "line_type_intelligence", None) or {}
-    carrier_type = (lti.get("type") or "").lower()  # "mobile", "landline", "voip", etc.
+    carrier_type = (lti.get("type") or "").lower()
     if carrier_type == "landline":
         raise RuntimeError("Mobile/SMS-capable numbers only.")
 
@@ -330,10 +330,8 @@ def send_sms(body: str, to: str) -> str:
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
     _assert_canadian_mobile(client, to)
     try:
-        # Send directly from your Canadian long code (raw number)
         msg = client.messages.create(body=body, from_=FROM_NUMBER, to=to)
     except Exception as e:
-        # Enrich the error with a Lookup snapshot for support/debugging
         try:
             info = client.lookups.v2.phone_numbers(to).fetch(fields="line_type_intelligence")
             lti = getattr(info, "line_type_intelligence", None) or {}
@@ -345,7 +343,7 @@ def send_sms(body: str, to: str) -> str:
             pass
         try:
             from twilio.base.exceptions import TwilioRestException
-        except Exception:  # pragma: no cover
+        except Exception:
             TwilioRestException = Exception  # type: ignore
         if isinstance(e, TwilioRestException):
             status = getattr(e, "status", "")
@@ -485,7 +483,6 @@ def _should_notify(last_msg: Dict[str, Any], current: Dict[str, Any], direction:
 
 # ──────────────────── State helpers (no ETag) ──────────────────────────────
 def _state_load(tc):
-    """Return dict state (creates skeleton on first run)."""
     try:
         ent = tc.get_entity(partition_key="state", row_key="latest")
         state = json.loads(ent.get("data", "{}") or "{}")
@@ -525,11 +522,9 @@ def _is_first_window(direction: str, now_sec: int, last_sent_at: int) -> bool:
         h, m = map(int, start_str.split(":"))
         start = now.replace(hour=h, minute=m, second=0, microsecond=0)
     else:
-        # Fallback to hard-coded defaults
         start = now.replace(hour=6 if direction == "SB" else 16, minute=0, second=0, microsecond=0)
     start_sec = int(start.timestamp())
     return last_sent_at < start_sec <= now_sec
-
 
 def check_and_notify():
     tc = _require_table_client(STATE_TABLE)
@@ -542,17 +537,18 @@ def check_and_notify():
     now_sec = int(time.time())
 
     last_msg = state.get("last_sent", {})
-    last_at = state.get("last_sent_at", {})
+    last_at  = state.get("last_sent_at", {})
 
     to_send: List[str] = []
     first_flags: Dict[str, bool] = {}
+
     for direction in ("NB", "SB"):
         last_dir_at = int(last_at.get(direction, 0))
 
-        # first send at the start of this direction's window
+        # 1) Fire once at the start of this direction's daily window
         first_in_win = _is_first_window(direction, now_sec, last_dir_at)
 
-        # change-based sends (requires a previous)
+        # 2) Normal change-based logic
         change_based = (
             last_msg.get(direction)
             and (now_sec - last_dir_at) >= NOTIFY_MIN_GAP_SEC
@@ -563,8 +559,7 @@ def check_and_notify():
             to_send.append(direction)
             first_flags[direction] = first_in_win
 
-    # Global morning/evening gating: inside DEFAULT_WINDOWS restrict,
-    # outside allow both directions to proceed
+    # Global morning/evening gate: inside DEFAULT_WINDOWS restrict; outside allow both
     now_hhmm_str = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
     allowed_dirs = _global_allowed_dirs(now_hhmm_str)
     if allowed_dirs:
@@ -574,7 +569,7 @@ def check_and_notify():
         _state_save(tc, state)
         return
 
-    # Broadcast and only then update state for the directions that actually sent at least one SMS
+    # Broadcast; update last_sent only if at least one SMS actually sent
     sent_dirs: List[str] = []
     for direction in to_send:
         sent_any = _broadcast_delays(current, direction, first_flags.get(direction, False))
@@ -584,21 +579,18 @@ def check_and_notify():
     if sent_dirs:
         for direction in sent_dirs:
             last_msg[direction] = current[direction]
-            last_at[direction] = now_sec
-        state["last_sent"] = last_msg
+            last_at[direction]  = now_sec
+        state["last_sent"]    = last_msg
         state["last_sent_at"] = last_at
-    # Always save the latest poll snapshot
+
     _state_save(tc, state)
 
 def _broadcast_delays(current: Dict[str, Dict[str, int]], direction: str, first_in_window: bool) -> bool:
-    """
-    Send notifications for a direction to all eligible users.
-    Returns True if at least one SMS was sent, else False.
-    """
+    """Send for a direction; return True if at least one SMS was sent."""
     now_str = datetime.now(ZoneInfo("America/Vancouver")).strftime("%H:%M")
     now_sec = int(time.time())
 
-    data = current[direction]
+    data  = current[direction]
     label = "Northbound" if direction == "NB" else "Southbound"
 
     sent_any = False
@@ -631,13 +623,10 @@ _poll_started = False
 
 def start_background_polling():
     """
-    Start the poller only after we actually acquire the distributed lock.
-    If another instance holds the lock, schedule a retry instead of
-    flipping _poll_started and giving up forever.
+    Start the poller after acquiring the distributed lock.
     """
     global _poll_started
 
-    # don’t start multiple loops in this process
     if _poll_started:
         return
 
@@ -649,7 +638,6 @@ def start_background_polling():
     now = int(time.time())
     expire = now + POLL_INTERVAL * 2
 
-    # Try to acquire/refresh the lock atomically
     acquired = False
     try:
         tc.create_entity({
@@ -707,7 +695,10 @@ def start_background_polling():
         while True:
             with _poll_lock:
                 try:
+                    ts = datetime.now(ZoneInfo("America/Vancouver")).isoformat(timespec="seconds")
+                    print(f"[poll] cycle start {ts}")
                     check_and_notify()
+                    print(f"[poll] cycle end   {ts}")
                 except Exception as e:
                     print("Polling error:", e)
             try:
@@ -725,12 +716,23 @@ def start_background_polling():
 
     threading.Thread(target=loop, daemon=True).start()
 
+# --- Auto-bootstrap the poller on process start (no request needed) --------
+def _auto_bootstrap():
+    try:
+        start_background_polling()
+        print("[boot] background polling bootstrap requested")
+    except Exception as e:
+        print("[boot] polling bootstrap failed:", e)
+
+# Delay a moment so all functions are defined before the timer fires
+threading.Timer(2.0, _auto_bootstrap).start()
+
 # ──────────────────── Utilities ────────────────────────────────────────────
 def _global_allowed_dirs(now_hhmm: str) -> set[str]:
     """
     Which directions are globally allowed *right now* from DEFAULT_WINDOWS.
-    If now is inside any window(s), allow only those directions.
-    If outside all windows, return empty → meaning "allow both".
+    If inside any window(s), allow only those directions.
+    If outside all windows, return empty => allow both.
     """
     dirs: set[str] = set()
     for w in DEFAULT_WINDOWS:
@@ -787,7 +789,7 @@ def status():
               max_age=600)
 def signup():
     data = request.get_json(silent=True) or {}
-    raw = data.get("phone") if request.is_json else request.form.get("phone")
+    raw = data.get("phone") if request is not None and request.is_json else request.form.get("phone")
     if not raw:
         abort(400, "phone field is required")
     try:
@@ -795,7 +797,6 @@ def signup():
     except ValueError:
         abort(400, "invalid phone")
 
-    # ⬇️ NEW: validate at signup so only CA mobile/voip get stored
     try:
         client = Client(ACCOUNT_SID, AUTH_TOKEN)
         _assert_canadian_mobile(client, phone)
@@ -832,15 +833,13 @@ def otp_start():
     try:
         phone = normalize_phone(raw)
     except ValueError:
-        # Soft success to avoid user enumeration
         return jsonify({"ok": True, "status": "sent"}), 200
 
-    # ⬇️ NEW: enforce CA mobile/voip before we ever send OTP
     try:
         client = Client(ACCOUNT_SID, AUTH_TOKEN)
         _assert_canadian_mobile(client, phone)
     except Exception:
-        return jsonify({"ok": True, "status": "sent"}), 200  # pretend sent; do not actually send
+        return jsonify({"ok": True, "status": "sent"}), 200
 
     if not any(u["phone"] == phone for u in get_user_settings()):
         return jsonify({"ok": True, "status": "sent"}), 200
@@ -907,22 +906,14 @@ def user_settings_api():
             user["pausedUntil"] = 0
     if "threshold_nb" in data:
         try:
-            user["threshold_nb"] = int(data["threshold_nb"])
+            user["threshold_nb"] = int(user["threshold_nb"])
         except Exception:
             return jsonify({"ok": False, "error": "invalid_threshold_nb"}), 400
     if "threshold_sb" in data:
         try:
-            user["threshold_sb"] = int(data["threshold_sb"])
+            user["threshold_sb"] = int(user["threshold_sb"])
         except Exception:
             return jsonify({"ok": False, "error": "invalid_threshold_sb"}), 400
-    if "threshold" in data:
-        # Backward compatibility: set both thresholds
-        try:
-            val = int(data["threshold"])
-            user["threshold_nb"] = val
-            user["threshold_sb"] = val
-        except Exception:
-            return jsonify({"ok": False, "error": "invalid_threshold"}), 400
     if "windows" in data:
         try:
             user["windows"] = parse_windows(data["windows"]) if isinstance(data["windows"], str) else data["windows"]
@@ -1073,24 +1064,21 @@ if __name__ == "__main__":
     if args.poll:
         while True:
             try:
+                ts = datetime.now(ZoneInfo("America/Vancouver")).isoformat(timespec="seconds")
+                print(f"[poll] (CLI) cycle start {ts}")
                 check_and_notify()
+                print(f"[poll] (CLI) cycle end   {ts}")
             except Exception as e:
                 print("Polling error:", e)
             time.sleep(300)
 
-
-@app.route("/dev/sms", methods=["POST"])
-def dev_sms():
-    to = request.form.get("to", "").strip()
-    body = request.form.get("body", "BridgeDelay test")
+# --- Auto-bootstrap the poller on process start (no request needed) --------
+def _auto_bootstrap():
     try:
-        sid = send_sms(body, normalize_phone(to))
-        return {"ok": True, "sid": sid}, 200
+        start_background_polling()
+        print("[boot] background polling bootstrap requested")
     except Exception as e:
-        import traceback
-        return {"ok": False, "error": str(e), "trace": traceback.format_exc()}, 500
+        print("[boot] polling bootstrap failed:", e)
 
-@app.route("/dev/showkey")
-def dev_showkey():
-    import os
-    return {"GOOGLE_MAPS_API_KEY": os.getenv("GOOGLE_MAPS_API_KEY")}
+# Fire a moment after import so all defs exist; lock prevents duplicates
+threading.Timer(2.0, _auto_bootstrap).start()
