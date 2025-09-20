@@ -14,13 +14,18 @@
   <!-- ── NAVBAR ─────────────────────────────────────────────── -->
   <header class="navbar">
     <a href="#" class="logo">BridgeDelay</a>
-    <nav>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">
+      <span class="nav-toggle__icon" aria-hidden="true">☰</span>
+      <span class="nav-toggle__label">Menu</span>
+    </button>
+    <nav id="primary-nav" class="navbar__links">
       <a href="#features">Features</a>
       <a href="setup/setup.html">Setup</a>
       <a href="faq/faq.html">FAQ</a>
       <a href="commands.html">Commands</a>
       <a href="signup/signup.html">Sign Up</a>
       <a href="login/login.html">Log In</a>
+      <button type="button" class="theme-toggle" aria-pressed="false">Light mode</button>
     </nav>
   </header>
 
