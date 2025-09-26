@@ -5,18 +5,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>BridgeDelay • FAQ</title>
   <link rel="stylesheet" href="../core.css" />
+  <link rel="stylesheet" href="../shared.css" />
   <link rel="stylesheet" href="faq.css" />
 </head>
 <body>
   <!-- NAVBAR -->
   <header class="navbar">
     <a href="../main.html" class="logo">BridgeDelay</a>
-    <nav>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">
+      <span class="nav-toggle__icon" aria-hidden="true">☰</span>
+      <span class="nav-toggle__label">Menu</span>
+    </button>
+    <nav id="primary-nav" class="navbar__links">
       <a href="../main.html#features">Features</a>
       <a href="../setup/setup.html">Setup</a>
+      <a href="../faq/faq.html" aria-current="page">FAQ</a>
       <a href="../commands.html">Commands</a>
       <a href="../signup/signup.html">Sign Up</a>
       <a href="../login/login.html">Log In</a>
+      <button type="button" class="theme-toggle" aria-pressed="false">Light mode</button>
     </nav>
   </header>
 
@@ -45,5 +52,7 @@
   <footer class="footer">
     <p>© 2025 BridgeDelay • Made in 🇨🇦</p>
   </footer>
+
+  <script src="../shared.js" defer></script>
 </body>
 </html>

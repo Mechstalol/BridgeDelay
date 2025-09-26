@@ -1,0 +1,166 @@
+/* ── Shared layout styles (navbar + footer) ───────────────────── */
+/* relies on design tokens declared in core.css */
+
+.navbar {
+  position: sticky;
+  top: 0;
+  z-index: 999;
+
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+
+  padding: 1rem 2rem;
+  background: var(--navbar-bg);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.navbar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.logo {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.navbar__links {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  margin-left: auto;
+}
+
+.navbar__links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--fg-muted);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.navbar__links a:hover,
+.navbar__links a:focus-visible {
+  color: var(--fg);
+}
+
+.navbar__links [aria-current="page"] {
+  color: var(--fg);
+}
+
+.nav-toggle {
+  margin-left: auto;
+  display: none;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--fg);
+  border-radius: calc(var(--radius) * 0.7);
+  padding: 0.45rem 0.9rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.nav-toggle__icon {
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.nav-toggle__label {
+  font-weight: 600;
+}
+
+.nav-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--border-soft);
+  background: var(--panel);
+  color: var(--fg);
+  border-radius: calc(var(--radius) * 0.7);
+  padding: 0.4rem 0.9rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.theme-toggle:hover,
+.theme-toggle:focus-visible {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
+
+@media (max-width: 820px) {
+  .navbar {
+    gap: 0.75rem;
+  }
+
+  .navbar__links {
+    position: absolute;
+    top: calc(100% + 0.75rem);
+    right: 2rem;
+    flex-direction: column;
+    align-items: flex-start;
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: calc(var(--radius) * 1.1);
+    padding: 1rem 1.25rem;
+    min-width: 220px;
+    z-index: 998;
+    box-shadow: var(--shadow-lg);
+    opacity: 0;
+    transform: translateY(-10px);
+    pointer-events: none;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    background-clip: padding-box;
+  }
+
+  .navbar__links.is-open {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+
+  .navbar__links a,
+  .navbar__links .theme-toggle,
+  .navbar__links #logout,
+  .navbar__links button {
+    width: 100%;
+    justify-content: flex-start;
+    padding: 0.35rem 0;
+  }
+
+  .navbar__links a {
+    display: flex;
+  }
+
+  .nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+}
+
+.footer {
+  text-align: center;
+  padding: 2rem 1rem 3rem;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--border-soft);
+}
