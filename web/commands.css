@@ -1,35 +1,3 @@
-html,
-body {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-}
-
-/* NAVBAR --------------------------------------------------------- */
-.navbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 1rem 2rem;
-  background: rgba(24, 27, 32, 0.85);
-  backdrop-filter: blur(8px);
-}
-
-.logo {
-  font-weight: 700;
-  color: var(--fg);
-  text-decoration: none;
-}
-
-.navbar nav a {
-  margin-left: 1.5rem;
-  color: var(--fg-muted);
-  text-decoration: none;
-  transition: 0.2s;
-}
-
-.navbar nav a:hover {
-  color: var(--fg);
-}
-
 /* HERO ----------------------------------------------------------- */
 .hero {
   text-align: center;
@@ -64,9 +32,9 @@ body {
   align-items: flex-start;
   padding: 2.75rem;
   margin-bottom: 4.5rem;
-  background: #1d1f23;
+  background: var(--panel);
   border-radius: calc(var(--radius) * 1.6);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--shadow-xl);
   overflow: visible;
 }
 
@@ -83,10 +51,10 @@ body {
   flex: 1 1 260px;
   min-width: 250px;
   padding: 1.25rem 1.75rem;
-  background: #31343d;
+  background: var(--panel-strong);
   border-radius: calc(var(--radius) * 1.2);
   transform: translateY(-6px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-md);
 }
 
 .bubbles {
@@ -101,7 +69,7 @@ body {
   font-size: 0.9rem;
   line-height: 1.35;
   border-radius: calc(var(--radius) * 1.2);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--shadow-sm);
 }
 
 .bubble.in  { background: var(--bg-alt); }
@@ -120,7 +88,7 @@ body {
     flex-direction: column;
     width: 100%;
     padding: 0.85rem;
-    background: #31343d;
+    background: var(--panel-strong);
     border-radius: calc(var(--radius) * 1.2);
     transform: none;
   }
@@ -135,7 +103,7 @@ body {
 body.force-mobile .sms-pair       { display:block;padding:1rem;row-gap:.85rem; }
 body.force-mobile .sms-copy       { margin-bottom:.85rem; }
 body.force-mobile .sms-copy p     { margin:0; }
-body.force-mobile .bubbles-wrap   { display:flex;flex-direction:column;width:100%;padding:.85rem;background:#31343d;border-radius:calc(var(--radius)*1.2);transform:none; }
+body.force-mobile .bubbles-wrap   { display:flex;flex-direction:column;width:100%;padding:.85rem;background:var(--panel-strong);border-radius:calc(var(--radius)*1.2);transform:none; }
 body.force-mobile .bubble         { width:94%;max-width:94%;align-self:center; }
 
 /* FOOTER --------------------------------------------------------- */
@@ -143,5 +111,5 @@ body.force-mobile .bubble         { width:94%;max-width:94%;align-self:center; }
   text-align: center;
   padding: 2rem 1rem 3rem;
   color: var(--fg-muted);
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-top: 1px solid var(--border-soft);
 }
